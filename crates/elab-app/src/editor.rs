@@ -6,6 +6,7 @@ use egui::{Align2, Color32, CursorIcon, FontId, Key, Modifiers, PointerButton, P
 use elab_app::model::{rot_f, Document, History, PartKind, Shape, P};
 use elab_app::netlist::Netlist;
 use elab_app::sim::OpView;
+use elab_sim::digital::Logic;
 use elab_sim::fmt_si;
 use std::collections::HashSet;
 
@@ -45,6 +46,10 @@ pub struct Out {
     pub changed: bool,
     /// Ein Bauteil wurde angeklickt/platziert: passendes Tutorial-Thema zeigen.
     pub focus: Option<PartKind>,
+    /// Logikschalter umgelegt
+    pub toggle: Option<u32>,
+    /// Taster wird gerade gedrückt gehalten
+    pub pressed: Option<u32>,
 }
 
 pub struct Editor {
@@ -88,6 +93,22 @@ impl Default for Editor {
 pub struct LiveData<'a> {
     pub nl: Option<&'a Netlist>,
     pub op: Option<&'a OpView>,
+    /// Logikpegel je Netz aus der Digitalsimulation
+    pub logic: Option<&'a [Logic]>,
+    /// Gedrückte Taster
+    pub pressed: &'a HashSet<u32>,
+}
+
+impl LiveData<'_> {
+    /// Logikpegel eines Netzes, falls es digital betrieben wird.
+    fn logic_of(&self, net: usize) -> Option<Logic> {
+        let nl = self.nl?;
+        if nl.digital.as_ref()?.is_digital_net.get(net).copied()? {
+            self.logic?.get(net).copied()
+        } else {
+            None
+        }
+    }
 }
 
 impl Editor {
@@ -382,6 +403,17 @@ impl Editor {
             self.wire_start = None;
         }
 
+        // --- Taster gedrückt halten ---
+        if self.tool == Tool::Select && resp.is_pointer_button_down_on() {
+            if let Some(o) = ui.input(|i| i.pointer.press_origin()) {
+                if let Hover::Part(id) | Hover::Pin(_, id, _) = self.hit(doc, self.to_grid(r, o)) {
+                    if matches!(doc.part(id).map(|p| &p.kind), Some(PartKind::Button)) {
+                        out.pressed = Some(id);
+                    }
+                }
+            }
+        }
+
         // --- Werkzeuge ---
         match self.tool.clone() {
             Tool::Select => self.select_tool(&resp, r, doc, hist, gs, g, shift, &mut out),
@@ -563,6 +595,9 @@ impl Editor {
                         self.select_only(id);
                     }
                     out.focus = doc.part(id).map(|p| p.kind.clone());
+                    if let Some(PartKind::LogicInput { .. }) = doc.part(id).map(|p| &p.kind) {
+                        out.toggle = Some(id);
+                    }
                 }
                 Hover::Wire(id) => {
                     if !shift {
@@ -599,6 +634,9 @@ impl Editor {
         let width = (s * 0.11).clamp(1.4, 3.6);
         let vmax = live.op.map_or(1.0, |o| o.max_abs_v().max(1e-3));
         let net_color = |net: usize| -> Color32 {
+            if let Some(v) = live.logic_of(net) {
+                return symbols::logic_color(v);
+            }
             match (live.nl, live.op) {
                 (Some(_), Some(op)) => match op.net_v.get(net).copied().flatten() {
                     Some(v) => volt_color(v, vmax),
@@ -652,8 +690,16 @@ impl Editor {
             if let PartKind::Probe = part.kind {
                 let k = probe_idx.iter().position(|&i| i == part.id).unwrap_or(0);
                 let col = probe_color(k);
-                let v = live.nl.zip(live.op).and_then(|(nl, op)| op.net_v.get(nl.pin_nets.get(&part.id)?[0]).copied().flatten());
-                self.paint_probe(painter, origin, &part.name, v, col, selected || hovered, s);
+                let net = live.nl.and_then(|nl| nl.pin_nets.get(&part.id).map(|p| p[0]));
+                let text = match net.and_then(|n| live.logic_of(n)) {
+                    Some(l) => Some(l.symbol().to_string()),
+                    None => live
+                        .nl
+                        .zip(live.op)
+                        .and_then(|(nl, op)| op.net_v.get(nl.pin_nets.get(&part.id)?[0]).copied().flatten())
+                        .map(|v| fmt_si(v, "V")),
+                };
+                self.paint_probe(painter, origin, &part.name, text, col, selected || hovered, s);
                 continue;
             }
             let bridged = live.nl.is_some_and(|nl| nl.bridged.contains(&part.id));
@@ -679,9 +725,26 @@ impl Editor {
                 painter.rect_filled(rr, 4.0, ACCENT.gamma_multiply(0.08));
             }
             let pen = Pen { painter, origin, s, rot: part.rot, color, width: pw };
-            symbols::draw(&pen, &part.kind, Live { glow });
-            if s >= 9.0 && !matches!(part.kind, PartKind::Ground) {
-                self.paint_label(painter, origin, part.rot, &part.kind, &part.name, s, &font);
+            let pins: Vec<Logic> = if part.kind.is_digital() {
+                live.nl
+                    .and_then(|nl| nl.pin_nets.get(&part.id))
+                    .map(|pn| pn.iter().map(|&n| live.logic_of(n).unwrap_or(Logic::Z)).collect())
+                    .filter(|_| live.logic.is_some())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            symbols::draw(&pen, &part.kind, Live { glow, pins, pressed: live.pressed.contains(&part.id) });
+            if s >= 9.0 && !matches!(part.kind, PartKind::Ground | PartKind::LogicHigh) {
+                if part.kind.is_digital() {
+                    let (x0, y0, x1, _) = part.bbox();
+                    let at = self.to_screen(r, (x0 + x1) * 0.5, y0) - Vec2::new(0.0, 2.0);
+                    let v = part.kind.value_text();
+                    let t = if v.is_empty() { part.name.clone() } else { format!("{} · {v}", part.name) };
+                    painter.text(at, Align2::CENTER_BOTTOM, t, font.clone(), Color32::from_rgb(228, 230, 236));
+                } else {
+                    self.paint_label(painter, origin, part.rot, &part.kind, &part.name, s, &font);
+                }
             }
         }
 
@@ -771,13 +834,13 @@ impl Editor {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn paint_probe(&self, painter: &egui::Painter, pin: Pos2, name: &str, v: Option<f64>, col: Color32, hi: bool, s: f32) {
+    fn paint_probe(&self, painter: &egui::Painter, pin: Pos2, name: &str, v: Option<String>, col: Color32, hi: bool, s: f32) {
         let corner = pin + Vec2::new(0.6, -0.6) * s;
         painter.line_segment([pin, corner], Stroke::new(1.6, col));
         painter.circle_filled(pin, (0.17 * s).max(3.0), col);
         let fs = (s * 0.6).clamp(10.0, 16.0);
         let text = match v {
-            Some(v) => format!("{name}  {}", fmt_si(v, "V")),
+            Some(v) => format!("{name}  {v}"),
             None => name.to_string(),
         };
         let galley = painter.layout_no_wrap(text, FontId::proportional(fs), Color32::WHITE);
@@ -897,14 +960,39 @@ impl Editor {
                 if let PartKind::Switch { .. } = part.kind {
                     lines.push(("Doppelklick: umschalten".into(), MUTED, false));
                 }
+                if part.kind.is_digital() {
+                    if let (Some(nl), Some(_)) = (live.nl, live.logic) {
+                        let names = part.kind.pin_names();
+                        let vals: Vec<String> = nl.pin_nets[&id]
+                            .iter()
+                            .enumerate()
+                            .map(|(k, &n)| format!("{} = {}", names.get(k).unwrap_or(&"?"), live.logic_of(n).map_or("–", |l| l.symbol())))
+                            .collect();
+                        lines.push((vals.join("  ·  "), symbols::logic_color(Logic::L1), false));
+                    }
+                    match part.kind {
+                        PartKind::LogicInput { .. } => lines.push(("Klick: umschalten".into(), MUTED, false)),
+                        PartKind::Button => lines.push(("Gedrückt halten: 1".into(), MUTED, false)),
+                        _ => {}
+                    }
+                }
             }
             Hover::Wire(id) => {
                 let Some(nl) = live.nl else { return };
                 let n = nl.wire_net[&id];
                 lines.push((format!("Netz {}", nl.nets[n].name), Color32::WHITE, true));
+                if let Some(l) = live.logic_of(n) {
+                    let what = match l {
+                        Logic::L1 => "Pegel 1 (High)",
+                        Logic::L0 => "Pegel 0 (Low)",
+                        Logic::X => "unbestimmt (X): Konflikt oder offener Eingang",
+                        Logic::Z => "hochohmig (Z): kein Ausgang treibt das Netz",
+                    };
+                    lines.push((what.into(), symbols::logic_color(l), false));
+                }
                 match net_v(n) {
                     Some(v) => lines.push((format!("U = {} gegen Masse", fmt_si(v, "V")), ACCENT, false)),
-                    None if !nl.nets[n].reachable => lines.push(("Keine Verbindung zur Masse".into(), RED, false)),
+                    None if !nl.nets[n].reachable && live.logic_of(n).is_none() => lines.push(("Keine Verbindung zur Masse".into(), RED, false)),
                     None => {}
                 }
             }

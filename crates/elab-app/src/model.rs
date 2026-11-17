@@ -138,22 +138,148 @@ impl LedColor {
     }
 }
 
+/// Logikgatter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum GateType {
+    And,
+    Or,
+    Not,
+    Nand,
+    Nor,
+    Xor,
+    Xnor,
+}
+
+impl GateType {
+    pub const ALL: [GateType; 7] = [GateType::And, GateType::Or, GateType::Not, GateType::Nand, GateType::Nor, GateType::Xor, GateType::Xnor];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GateType::And => "UND",
+            GateType::Or => "ODER",
+            GateType::Not => "NICHT",
+            GateType::Nand => "NAND",
+            GateType::Nor => "NOR",
+            GateType::Xor => "XOR",
+            GateType::Xnor => "XNOR",
+        }
+    }
+
+    /// Kennzeichen im IEC-Rechtecksymbol.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            GateType::And | GateType::Nand => "&",
+            GateType::Or | GateType::Nor => "≥1",
+            GateType::Not => "1",
+            GateType::Xor | GateType::Xnor => "=1",
+        }
+    }
+
+    /// Negierter Ausgang (Kreis am Ausgang)?
+    pub fn inverted(self) -> bool {
+        matches!(self, GateType::Not | GateType::Nand | GateType::Nor | GateType::Xnor)
+    }
+
+    pub fn inputs(self) -> usize {
+        if self == GateType::Not {
+            1
+        } else {
+            2
+        }
+    }
+
+    pub fn to_sim(self) -> elab_sim::digital::GateKind {
+        use elab_sim::digital::GateKind as G;
+        match self {
+            GateType::And => G::And,
+            GateType::Or => G::Or,
+            GateType::Not => G::Not,
+            GateType::Nand => G::Nand,
+            GateType::Nor => G::Nor,
+            GateType::Xor => G::Xor,
+            GateType::Xnor => G::Xnor,
+        }
+    }
+}
+
+/// Rolle eines Anschlusses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinRole {
+    /// Analog (oder neutral wie Masse und Messpunkt)
+    Passive,
+    /// Digitaler Eingang
+    In,
+    /// Digitaler Ausgang
+    Out,
+}
+
 /// Bauteiltyp mit seinen Parametern.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PartKind {
-    Resistor { r: f64 },
-    Capacitor { c: f64 },
-    Inductor { l: f64 },
-    Lamp { v_nom: f64, p_nom: f64 },
-    DcVoltage { v: f64 },
-    AcVoltage { amp: f64, freq: f64, offset: f64 },
-    SquareVoltage { low: f64, high: f64, freq: f64 },
-    CurrentSource { i: f64 },
-    Diode { kind: DiodeType },
-    Led { color: LedColor },
-    Switch { closed: bool },
+    Resistor {
+        r: f64,
+    },
+    Capacitor {
+        c: f64,
+    },
+    Inductor {
+        l: f64,
+    },
+    Lamp {
+        v_nom: f64,
+        p_nom: f64,
+    },
+    DcVoltage {
+        v: f64,
+    },
+    AcVoltage {
+        amp: f64,
+        freq: f64,
+        offset: f64,
+    },
+    SquareVoltage {
+        low: f64,
+        high: f64,
+        freq: f64,
+    },
+    CurrentSource {
+        i: f64,
+    },
+    Diode {
+        kind: DiodeType,
+    },
+    Led {
+        color: LedColor,
+    },
+    Switch {
+        closed: bool,
+    },
     Ground,
     Probe,
+    // --- Digital ---
+    Gate {
+        gate: GateType,
+    },
+    /// Logikschalter (rastend)
+    LogicInput {
+        on: bool,
+    },
+    /// Taster: 1, solange gedrückt
+    Button,
+    /// Taktgeber
+    Clock {
+        freq: f64,
+    },
+    /// Fester Pegel 1
+    LogicHigh,
+    /// Leuchtanzeige für einen Logikpegel
+    LogicLed {
+        color: LedColor,
+    },
+    DFlipFlop,
+    JkFlipFlop,
+    Counter4,
+    SevenSeg,
 }
 
 /// Grobe Einordnung für Palette und Darstellung.
@@ -165,11 +291,23 @@ pub enum Shape {
     Source,
     /// Ein Pin bei (0,0)
     OnePin,
+    /// Digitalbaustein: Eingänge links, Ausgänge rechts
+    Logic,
+}
+
+const fn p(x: i32, y: i32) -> P {
+    P::new(x, y)
 }
 
 impl PartKind {
-    /// Alle Bauteile der Palette mit Standardwerten.
+    /// Bauteile der Palette mit Standardwerten: (Bereich, Gruppe, Bauteile).
     pub fn palette() -> Vec<(&'static str, Vec<PartKind>)> {
+        let mut v = Self::palette_analog();
+        v.extend(Self::palette_digital());
+        v
+    }
+
+    pub fn palette_analog() -> Vec<(&'static str, Vec<PartKind>)> {
         vec![
             (
                 "Quellen",
@@ -194,13 +332,33 @@ impl PartKind {
         ]
     }
 
+    pub fn palette_digital() -> Vec<(&'static str, Vec<PartKind>)> {
+        vec![
+            ("Gatter", GateType::ALL.iter().map(|&g| PartKind::Gate { gate: g }).collect()),
+            (
+                "Eingänge",
+                vec![PartKind::LogicInput { on: false }, PartKind::Button, PartKind::Clock { freq: 1.0 }, PartKind::LogicHigh, PartKind::Ground],
+            ),
+            ("Ausgänge", vec![PartKind::LogicLed { color: LedColor::Rot }, PartKind::SevenSeg, PartKind::Probe]),
+            ("Speicher & Zähler", vec![PartKind::DFlipFlop, PartKind::JkFlipFlop, PartKind::Counter4]),
+        ]
+    }
+
     pub fn shape(&self) -> Shape {
         use PartKind::*;
         match self {
             DcVoltage { .. } | AcVoltage { .. } | SquareVoltage { .. } | CurrentSource { .. } => Shape::Source,
             Ground | Probe => Shape::OnePin,
+            Gate { .. } | LogicInput { .. } | Button | Clock { .. } | LogicHigh | LogicLed { .. } | DFlipFlop | JkFlipFlop | Counter4 | SevenSeg => {
+                Shape::Logic
+            }
             _ => Shape::TwoPole,
         }
+    }
+
+    /// Ist das ein Digitalbaustein?
+    pub fn is_digital(&self) -> bool {
+        self.shape() == Shape::Logic
     }
 
     /// Kennbuchstabe für automatische Namen.
@@ -218,6 +376,14 @@ impl PartKind {
             Switch { .. } => "S",
             Ground => "GND",
             Probe => "M",
+            Gate { gate } => gate.label(),
+            LogicInput { .. } | Button => "",
+            Clock { .. } => "CLK",
+            LogicHigh => "VCC",
+            LogicLed { .. } => "Y",
+            DFlipFlop | JkFlipFlop => "FF",
+            Counter4 => "CTR",
+            SevenSeg => "ANZ",
         }
     }
 
@@ -238,18 +404,72 @@ impl PartKind {
             Switch { .. } => "Schalter",
             Ground => "Masse",
             Probe => "Messpunkt",
+            Gate { gate } => match gate {
+                GateType::And => "UND-Gatter",
+                GateType::Or => "ODER-Gatter",
+                GateType::Not => "NICHT-Gatter",
+                GateType::Nand => "NAND-Gatter",
+                GateType::Nor => "NOR-Gatter",
+                GateType::Xor => "XOR-Gatter",
+                GateType::Xnor => "XNOR-Gatter",
+            },
+            LogicInput { .. } => "Logikschalter",
+            Button => "Taster",
+            Clock { .. } => "Taktgeber",
+            LogicHigh => "Pegel 1",
+            LogicLed { .. } => "Logik-Anzeige",
+            DFlipFlop => "D-Flipflop",
+            JkFlipFlop => "JK-Flipflop",
+            Counter4 => "4-Bit-Zähler",
+            SevenSeg => "7-Segment-Anzeige",
         }
     }
 
     /// Pins in lokalen Rasterkoordinaten (vor der Drehung).
     pub fn local_pins(&self) -> &'static [P] {
-        const TWO: [P; 2] = [P::new(-2, 0), P::new(2, 0)];
-        const SRC: [P; 2] = [P::new(0, -2), P::new(0, 2)];
-        const ONE: [P; 1] = [P::new(0, 0)];
-        match self.shape() {
-            Shape::TwoPole => &TWO,
-            Shape::Source => &SRC,
-            Shape::OnePin => &ONE,
+        const TWO: [P; 2] = [p(-2, 0), p(2, 0)];
+        const SRC: [P; 2] = [p(0, -2), p(0, 2)];
+        const ONE: [P; 1] = [p(0, 0)];
+        const GATE2: [P; 3] = [p(-3, -1), p(-3, 1), p(3, 0)];
+        const GATE1: [P; 2] = [p(-3, 0), p(3, 0)];
+        const OUT: [P; 1] = [p(2, 0)];
+        const IN: [P; 1] = [p(-2, 0)];
+        const DFF: [P; 4] = [p(-3, -2), p(-3, 2), p(3, -2), p(3, 2)];
+        const JK: [P; 5] = [p(-3, -2), p(-3, 0), p(-3, 2), p(3, -2), p(3, 2)];
+        const CTR: [P; 6] = [p(-3, -2), p(-3, 2), p(3, -3), p(3, -1), p(3, 1), p(3, 3)];
+        const SEG: [P; 4] = [p(-3, -3), p(-3, -1), p(-3, 1), p(-3, 3)];
+        use PartKind::*;
+        match self {
+            Gate { gate } if gate.inputs() == 1 => &GATE1,
+            Gate { .. } => &GATE2,
+            LogicInput { .. } | Button | Clock { .. } => &OUT,
+            LogicHigh => &ONE,
+            LogicLed { .. } => &IN,
+            DFlipFlop => &DFF,
+            JkFlipFlop => &JK,
+            Counter4 => &CTR,
+            SevenSeg => &SEG,
+            _ => match self.shape() {
+                Shape::Source => &SRC,
+                Shape::OnePin => &ONE,
+                _ => &TWO,
+            },
+        }
+    }
+
+    /// Rolle jedes Anschlusses (gleiche Reihenfolge wie [`Self::local_pins`]).
+    pub fn pin_roles(&self) -> Vec<PinRole> {
+        use PartKind::*;
+        use PinRole::*;
+        let n = self.local_pins().len();
+        match self {
+            Gate { .. } => (0..n).map(|k| if k + 1 == n { Out } else { In }).collect(),
+            LogicInput { .. } | Button | Clock { .. } | LogicHigh => vec![Out],
+            LogicLed { .. } | SevenSeg => vec![In; n],
+            DFlipFlop => vec![In, In, Out, Out],
+            JkFlipFlop => vec![In, In, In, Out, Out],
+            Counter4 => vec![In, In, Out, Out, Out, Out],
+            _ => vec![Passive; n],
         }
     }
 
@@ -259,7 +479,15 @@ impl PartKind {
         match self {
             Diode { .. } | Led { .. } => &["Anode", "Kathode"],
             DcVoltage { .. } | AcVoltage { .. } | SquareVoltage { .. } | CurrentSource { .. } => &["+", "−"],
-            Ground | Probe => &["Anschluss"],
+            Ground | Probe | LogicHigh => &["Anschluss"],
+            Gate { gate } if gate.inputs() == 1 => &["A", "Y"],
+            Gate { .. } => &["A", "B", "Y"],
+            LogicInput { .. } | Button | Clock { .. } => &["Ausgang"],
+            LogicLed { .. } => &["Eingang"],
+            DFlipFlop => &["D", "C", "Q", "/Q"],
+            JkFlipFlop => &["J", "C", "K", "Q", "/Q"],
+            Counter4 => &["C", "R", "Q0", "Q1", "Q2", "Q3"],
+            SevenSeg => &["1", "2", "4", "8"],
             _ => &["1", "2"],
         }
     }
@@ -286,25 +514,34 @@ impl PartKind {
             Diode { kind } => kind.label().into(),
             Led { color } => format!("LED {}", color.label()),
             Switch { closed } => (if *closed { "geschlossen" } else { "offen" }).into(),
-            Ground | Probe => String::new(),
+            Clock { freq } => si(*freq, "Hz"),
+            _ => String::new(),
         }
     }
 
     /// Lokale Hüllbox (x0, y0, x1, y1) in Rastereinheiten für Treffertests.
     pub fn local_bbox(&self) -> (f32, f32, f32, f32) {
+        use PartKind::*;
         match self {
-            PartKind::Ground => (-0.8, -0.2, 0.8, 1.3),
-            PartKind::Probe => (-0.2, -1.6, 2.6, 0.2),
+            Ground => (-0.8, -0.2, 0.8, 1.3),
+            Probe => (-0.2, -1.6, 2.6, 0.2),
+            Gate { gate } if gate.inputs() == 1 => (-3.0, -1.5, 3.0, 1.5),
+            Gate { .. } => (-3.0, -2.0, 3.0, 2.0),
+            LogicInput { .. } | Button | Clock { .. } => (-1.8, -1.0, 2.0, 1.0),
+            LogicHigh => (-0.8, -1.6, 0.8, 0.2),
+            LogicLed { .. } => (-2.0, -1.0, 1.0, 1.0),
+            DFlipFlop | JkFlipFlop => (-3.0, -3.2, 3.0, 3.2),
+            Counter4 => (-3.0, -4.4, 3.0, 4.4),
+            SevenSeg => (-3.0, -4.4, 2.8, 4.4),
             _ => match self.shape() {
-                Shape::TwoPole => (-2.0, -0.9, 2.0, 0.9),
                 Shape::Source => (-1.0, -2.0, 1.0, 2.0),
-                Shape::OnePin => (-0.5, -0.5, 0.5, 0.5),
+                _ => (-2.0, -0.9, 2.0, 0.9),
             },
         }
     }
 
     pub fn has_value(&self) -> bool {
-        !matches!(self, PartKind::Ground | PartKind::Probe)
+        !self.value_text().is_empty()
     }
 }
 
@@ -402,8 +639,18 @@ impl Document {
     }
 
     /// Platziert ein Bauteil mit automatischem Namen und gibt seine ID zurück.
+    /// Nächster freier Buchstabe A, B, C … (für Logikeingänge, wie in Wahrheitstabellen).
+    pub fn next_letter(&self) -> String {
+        let used: HashSet<&str> = self.parts.iter().map(|p| p.name.as_str()).collect();
+        ('A'..='Z').map(|c| c.to_string()).find(|n| !used.contains(n.as_str())).unwrap_or_else(|| self.next_name("E"))
+    }
+
     pub fn add_part(&mut self, kind: PartKind, pos: P, rot: u8) -> u32 {
-        let name = if matches!(kind, PartKind::Ground) { "GND".to_string() } else { self.next_name(kind.prefix()) };
+        let name = match kind {
+            PartKind::Ground => "GND".to_string(),
+            PartKind::LogicInput { .. } | PartKind::Button => self.next_letter(),
+            _ => self.next_name(kind.prefix()),
+        };
         let id = self.new_id();
         self.parts.push(Part { id, name, kind, pos, rot: rot % 4 });
         id

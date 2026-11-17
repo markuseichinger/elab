@@ -1,6 +1,7 @@
 //! elab – Elektronik-Lernlabor: Schaltungen bauen und live simulieren.
 
 mod editor;
+mod panels;
 mod script;
 mod symbols;
 mod theme;
@@ -74,6 +75,18 @@ struct App {
     buf_sel: Option<u32>,
     flash: Option<(String, Color32, f64)>,
     script: Option<script::Runner>,
+    // Digital
+    dsim: Option<elab_sim::digital::DigitalSim>,
+    dsim_key: Option<Document>,
+    pressed: std::collections::HashSet<u32>,
+    dig_speed: f64,
+    dig_paused: bool,
+    an_window: f64,
+    truth: Option<Result<sim::TruthTable, String>>,
+    bottom_tab: panels::BottomTab,
+    palette_digital: bool,
+    /// Vom Testskript gedrückter Taster
+    script_pressed: Option<u32>,
 }
 
 impl App {
@@ -103,6 +116,16 @@ impl App {
             buf_sel: None,
             flash: None,
             script: script.map(script::Runner::new),
+            dsim: None,
+            dsim_key: None,
+            pressed: Default::default(),
+            dig_speed: 1.0,
+            dig_paused: false,
+            an_window: 10.0,
+            truth: None,
+            bottom_tab: panels::BottomTab::Scope,
+            palette_digital: false,
+            script_pressed: None,
         };
         if let Some(f) = file {
             app.open_path(f);
@@ -124,10 +147,35 @@ impl App {
 
     fn load_example(&mut self, idx: usize) {
         if let Some(ex) = examples::all().into_iter().nth(idx) {
+            let sequential = ex
+                .doc
+                .parts
+                .iter()
+                .any(|p| matches!(p.kind, PartKind::Clock { .. } | PartKind::DFlipFlop | PartKind::JkFlipFlop | PartKind::Counter4));
             self.replace_doc(ex.doc);
             self.saved = self.doc.clone();
             self.file = None;
             self.scope_t = ex.scope_t;
+            self.palette_digital = ex.digital;
+            self.bottom_tab = if ex.digital {
+                if sequential {
+                    panels::BottomTab::Analyzer
+                } else {
+                    panels::BottomTab::Truth
+                }
+            } else {
+                panels::BottomTab::Scope
+            };
+            self.show_scope = true;
+            self.topic = if ex.digital {
+                if sequential {
+                    Topic::Analyzer
+                } else {
+                    Topic::TruthTable
+                }
+            } else {
+                Topic::Welcome
+            };
             self.flash(format!("Beispiel „{}“: {}", ex.title, ex.summary), BLUE);
         }
     }
@@ -291,10 +339,11 @@ impl App {
                 self.sim_on = !self.sim_on;
                 self.topic = Topic::OperatingPoint;
             }
-            let r = ui.add(egui::Button::new(RichText::new("📈 Oszilloskop").size(15.0)).selected(self.show_scope));
+            let r = ui
+                .add(egui::Button::new(RichText::new("📈 Messgeräte").size(15.0)).selected(self.show_scope))
+                .on_hover_text("Oszilloskop, Logikanalysator und Wahrheitstabelle");
             if r.clicked() {
                 self.show_scope = !self.show_scope;
-                self.topic = Topic::Scope;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = if self.show_tutorial { "🎓 Tutorial an" } else { "🎓 Tutorial" };
@@ -314,6 +363,9 @@ impl App {
                 }
                 Err(e) => {
                     ui.label(RichText::new(format!("⚠ {e}")).color(RED).strong());
+                }
+                Ok(_) if self.nl.as_ref().is_some_and(|nl| nl.simulated.is_empty() && nl.excluded.is_empty() && nl.digital.is_some()) => {
+                    ui.label(RichText::new("✔ Digitalschaltung").color(GREEN).strong());
                 }
                 Ok(op) => {
                     let nl = self.nl.as_ref().unwrap();
@@ -337,6 +389,19 @@ impl App {
                         let names: Vec<String> = nl.excluded.iter().filter_map(|id| self.doc.part(*id)).map(|p| p.name.clone()).collect();
                         ui.label(RichText::new(format!("· nicht verbunden: {}", names.join(", "))).color(ACCENT));
                     }
+                }
+            }
+            if let (Some(ds), Some(nl)) = (&self.dsim, &self.nl) {
+                let d = nl.digital.as_ref().unwrap();
+                ui.separator();
+                ui.label(RichText::new(format!("Digital: {} Bausteine · t = {}", d.comps.len(), fmt_si(ds.time as f64 * 1e-9, "s"))).color(MUTED));
+                let conflicts = ds.conflicts();
+                if !conflicts.is_empty() {
+                    let names: Vec<&str> = conflicts.iter().map(|&n| nl.nets[n].name.as_str()).collect();
+                    ui.label(RichText::new(format!("⚠ Buskonflikt an {}", names.join(", "))).color(RED));
+                }
+                if ds.overloaded {
+                    ui.label(RichText::new("⚠ Dauerschwingung").color(RED));
                 }
             }
             if let Some((msg, col, t)) = &mut self.flash {
@@ -380,12 +445,22 @@ impl App {
             }
         });
         ui.add_space(4.0);
-        for (cat, kinds) in PartKind::palette() {
+        ui.horizontal(|ui| {
+            if ui.selectable_label(!self.palette_digital, RichText::new("Analog").size(14.0).strong()).clicked() {
+                self.palette_digital = false;
+            }
+            if ui.selectable_label(self.palette_digital, RichText::new("Digital").size(14.0).strong()).clicked() {
+                self.palette_digital = true;
+                self.topic = Topic::Logic;
+            }
+        });
+        let groups = if self.palette_digital { PartKind::palette_digital() } else { PartKind::palette_analog() };
+        for (cat, kinds) in groups {
             ui.label(RichText::new(cat).small().color(MUTED));
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
                 for kind in kinds {
-                    let selected = matches!(&self.ed.tool, Tool::Place(k) if std::mem::discriminant(k) == std::mem::discriminant(&kind));
+                    let selected = matches!(&self.ed.tool, Tool::Place(k) if *k == kind);
                     let r =
                         tile(ui, &kind, selected).on_hover_text(format!("{}: in den Schaltplan ziehen oder anklicken und absetzen", kind.label()));
                     if r.drag_started() {
@@ -590,7 +665,85 @@ impl App {
                     new_kind = Some(PartKind::Switch { closed: c });
                 }
             }
-            PartKind::Ground | PartKind::Probe => {}
+            PartKind::Gate { gate } => {
+                let mut g = gate;
+                ui.horizontal(|ui| {
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Funktion").color(MUTED)));
+                    egui::ComboBox::from_id_salt(("gt", id)).selected_text(g.label()).show_ui(ui, |ui| {
+                        for t in elab_app::model::GateType::ALL.into_iter().filter(|t| t.inputs() == gate.inputs()) {
+                            ui.selectable_value(&mut g, t, t.label());
+                        }
+                    });
+                });
+                if g != gate {
+                    new_kind = Some(PartKind::Gate { gate: g });
+                }
+            }
+            PartKind::LogicInput { on } => {
+                let mut c = on;
+                ui.horizontal(|ui| {
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Pegel").color(MUTED)));
+                    ui.checkbox(&mut c, "1 (ein)");
+                });
+                if c != on {
+                    // Umschalten ist Bedienung, keine Bearbeitung: nicht in die Undo-Historie
+                    self.doc.part_mut(id).unwrap().kind = PartKind::LogicInput { on: c };
+                }
+            }
+            PartKind::Clock { freq } => {
+                if let Some(x) = self.si_field(ui, "Frequenz", "Hz", freq, true, "cf") {
+                    new_kind = Some(PartKind::Clock { freq: x });
+                }
+                ui.label(RichText::new(format!("Periode: {}", fmt_si(1.0 / freq, "s"))).color(MUTED));
+            }
+            PartKind::LogicLed { color } => {
+                let mut c = color;
+                ui.horizontal(|ui| {
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Farbe").color(MUTED)));
+                    egui::ComboBox::from_id_salt(("llc", id)).selected_text(c.label()).show_ui(ui, |ui| {
+                        for t in LedColor::ALL {
+                            ui.selectable_value(&mut c, t, t.label());
+                        }
+                    });
+                });
+                if c != color {
+                    new_kind = Some(PartKind::LogicLed { color: c });
+                }
+            }
+            PartKind::Ground
+            | PartKind::Probe
+            | PartKind::Button
+            | PartKind::LogicHigh
+            | PartKind::DFlipFlop
+            | PartKind::JkFlipFlop
+            | PartKind::Counter4
+            | PartKind::SevenSeg => {}
+        }
+        // Pegel an den Anschlüssen von Digitalbausteinen
+        if part.kind.is_digital() {
+            if let (Some(ds), Some(nl)) = (&self.dsim, &self.nl) {
+                ui.add_space(4.0);
+                egui::Frame::group(ui.style()).inner_margin(8.0).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new("Pegel an den Anschlüssen").strong().color(BLUE));
+                    let names = part.kind.pin_names();
+                    ui.horizontal_wrapped(|ui| {
+                        for (k, &n) in nl.pin_nets[&id].iter().enumerate() {
+                            let v = ds.net(n);
+                            ui.label(
+                                RichText::new(format!("{} = {}", names.get(k).unwrap_or(&"?"), v.symbol()))
+                                    .size(15.0)
+                                    .strong()
+                                    .color(symbols::logic_color(v)),
+                            );
+                            ui.add_space(6.0);
+                        }
+                    });
+                    if let PartKind::Button = part.kind {
+                        ui.label(RichText::new("Im Schaltplan gedrückt halten.").small().color(MUTED));
+                    }
+                });
+            }
         }
         if let Some(k) = new_kind {
             self.hist.checkpoint(&self.doc);
@@ -723,6 +876,15 @@ impl App {
                 }
             }
         });
+        ui.add_space(6.0);
+        ui.label(RichText::new("Digitaltechnik").strong().color(MUTED));
+        ui.horizontal_wrapped(|ui| {
+            for t in Topic::DIGITAL {
+                if ui.selectable_label(self.topic == t, tutorial::doc(t).title).clicked() {
+                    self.topic = t;
+                }
+            }
+        });
     }
 
     /// Live-Werte des ausgewählten Bauteils passend zum Thema.
@@ -758,11 +920,6 @@ impl App {
 
     fn scope_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let r = ui.label(RichText::new("📈 Oszilloskop").size(16.0).strong().color(ACCENT));
-            if r.clicked() {
-                self.topic = Topic::Scope;
-            }
-            ui.add_space(8.0);
             ui.label(RichText::new("Zeitbasis").color(MUTED));
             let cur = TIMEBASES.iter().find(|t| t.0 == self.scope_t).map_or_else(|| fmt_si(self.scope_t, "s"), |t| t.1.to_string());
             egui::ComboBox::from_id_salt("tb").selected_text(cur).show_ui(ui, |ui| {
@@ -909,31 +1066,38 @@ impl App {
                 run.wait = 2;
             }
             Dump(path) => {
+                use serde_json::json;
                 let status = match &self.op {
-                    Ok(op) => format!("ok newton={} ", op.newton),
+                    Ok(op) => format!("ok newton={}", op.newton),
                     Err(e) => format!("err {e}"),
                 };
-                let values: Vec<String> = self
-                    .doc
-                    .parts
-                    .iter()
-                    .filter_map(|p| {
-                        let v = self.op.as_ref().ok()?.parts.get(&p.id)?;
-                        Some(format!("{:?}: [{:e}, {:e}]", p.name, v.u, v.i))
-                    })
-                    .collect();
+                let mut values = serde_json::Map::new();
+                let mut logic = serde_json::Map::new();
+                for p in &self.doc.parts {
+                    if let Some(v) = self.op.as_ref().ok().and_then(|o| o.parts.get(&p.id)) {
+                        values.insert(p.name.clone(), json!([v.u, v.i]));
+                    }
+                    if let (Some(ds), Some(nl)) = (&self.dsim, &self.nl) {
+                        if p.kind.is_digital() || matches!(p.kind, PartKind::Probe) {
+                            let v: String = nl.pin_nets[&p.id].iter().map(|&n| ds.net(n).symbol()).collect();
+                            logic.insert(p.name.clone(), json!(v));
+                        }
+                    }
+                }
                 let bridged: Vec<String> =
-                    self.nl.iter().flat_map(|nl| nl.bridged.iter()).filter_map(|id| self.doc.part(*id)).map(|p| format!("{:?}", p.name)).collect();
-                let s = format!(
-                    "{{\"status\": {:?}, \"values\": {{{}}}, \"bridged\": [{}], \"undo\": {}, \"tool\": {:?}, \"selected\": {:?}, \"doc\": {}}}",
-                    status,
-                    values.join(", "),
-                    bridged.join(", "),
-                    self.hist.can_undo(),
-                    format!("{:?}", self.ed.tool),
-                    self.ed.sel_parts.iter().filter_map(|id| self.doc.part(*id)).map(|p| p.name.clone()).collect::<Vec<_>>(),
-                    self.doc.to_json()
-                );
+                    self.nl.iter().flat_map(|nl| nl.bridged.iter()).filter_map(|id| self.doc.part(*id)).map(|p| p.name.clone()).collect();
+                let selected: Vec<String> = self.ed.sel_parts.iter().filter_map(|id| self.doc.part(*id)).map(|p| p.name.clone()).collect();
+                let out = json!({
+                    "status": status,
+                    "values": values,
+                    "logic": logic,
+                    "bridged": bridged,
+                    "undo": self.hist.can_undo(),
+                    "tool": format!("{:?}", self.ed.tool),
+                    "selected": selected,
+                    "doc": serde_json::to_value(&self.doc).unwrap(),
+                });
+                let s = serde_json::to_string_pretty(&out).unwrap();
                 if path == "-" {
                     println!("{s}");
                 } else {
@@ -943,6 +1107,27 @@ impl App {
                     std::fs::write(&path, s).expect("Dump schreiben");
                 }
             }
+            Advance(secs) => {
+                if let Some(ds) = &mut self.dsim {
+                    let t = ds.time + (secs * 1e9) as u64;
+                    ds.run_until(t);
+                }
+            }
+            Hold(x, y) => {
+                let id = self.doc.parts.iter().find(|p| p.bbox().0 <= x && p.bbox().2 >= x && p.bbox().1 <= y && p.bbox().3 >= y).map(|p| p.id);
+                self.script_pressed = id;
+            }
+            Release => self.script_pressed = None,
+            Panel(name) => {
+                self.show_scope = true;
+                self.bottom_tab = match name.as_str() {
+                    "analyzer" => panels::BottomTab::Analyzer,
+                    "truth" => panels::BottomTab::Truth,
+                    _ => panels::BottomTab::Scope,
+                };
+            }
+            Palette(digital) => self.palette_digital = digital,
+            Pause(on) => self.dig_paused = on,
             Quit => std::process::exit(0),
         }
     }
@@ -967,6 +1152,11 @@ fn tile(ui: &mut egui::Ui, kind: &PartKind, selected: bool) -> egui::Response {
         Shape::Source => (3, 13.0, Vec2::ZERO),
         Shape::TwoPole => (0, 14.0, Vec2::ZERO),
         Shape::OnePin => (0, 13.0, Vec2::new(0.0, -7.0)),
+        Shape::Logic => {
+            let (x0, y0, x1, y1) = kind.local_bbox();
+            let s = (62.0 / (x1 - x0)).min(36.0 / (y1 - y0)).min(13.0);
+            (0, s, -Vec2::new((x0 + x1) * 0.5, (y0 + y1) * 0.5) * s)
+        }
     };
     let pen = symbols::Pen { painter: &painter, origin: icon_c + off, s, rot, color: col, width: 1.5 };
     if let PartKind::Probe = kind {
@@ -986,6 +1176,14 @@ fn tile(ui: &mut egui::Ui, kind: &PartKind, selected: bool) -> egui::Response {
         PartKind::CurrentSource { .. } => "Strom",
         PartKind::Lamp { .. } => "Lampe",
         PartKind::Led { .. } => "LED",
+        PartKind::Gate { gate } => gate.label(),
+        PartKind::LogicInput { .. } => "Schalter",
+        PartKind::Clock { .. } => "Takt",
+        PartKind::LogicLed { .. } => "Anzeige",
+        PartKind::DFlipFlop => "D-FF",
+        PartKind::JkFlipFlop => "JK-FF",
+        PartKind::Counter4 => "Zähler",
+        PartKind::SevenSeg => "7-Segment",
         other => other.label(),
     };
     painter.text(rect.center_bottom() - Vec2::new(0.0, 5.0), egui::Align2::CENTER_BOTTOM, short, egui::FontId::proportional(11.0), MUTED);
@@ -1019,6 +1217,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.global_keys(&ctx);
         self.update_sim();
+        self.update_digital(&ctx);
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
         egui::Panel::left("left").resizable(true).default_size(330.0).min_size(300.0).show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
@@ -1033,13 +1232,24 @@ impl eframe::App for App {
             });
         }
         if self.show_scope {
-            egui::Panel::bottom("scope").resizable(true).default_size(270.0).min_size(150.0).show(ui, |ui| self.scope_ui(ui));
+            egui::Panel::bottom("scope").resizable(true).default_size(270.0).min_size(150.0).show(ui, |ui| self.bottom_ui(ui));
         }
         egui::CentralPanel::no_frame().show(ui, |ui| {
-            let live = LiveData { nl: self.nl.as_ref(), op: self.op.as_ref().ok() };
+            let live =
+                LiveData { nl: self.nl.as_ref(), op: self.op.as_ref().ok(), logic: self.dsim.as_ref().map(|d| d.nets()), pressed: &self.pressed };
             let out = self.ed.ui(ui, &mut self.doc, &mut self.hist, &live);
             if let Some(k) = out.focus {
                 self.topic = Topic::of(&k);
+            }
+            if let Some(id) = out.toggle {
+                if let Some(PartKind::LogicInput { on }) = self.doc.part_mut(id).map(|p| &mut p.kind) {
+                    *on = !*on;
+                }
+            }
+            let pressed: std::collections::HashSet<u32> = out.pressed.into_iter().chain(self.script_pressed).collect();
+            if pressed != self.pressed {
+                self.pressed = pressed;
+                ui.ctx().request_repaint();
             }
         });
         // Fenstertitel

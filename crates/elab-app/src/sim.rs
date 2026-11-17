@@ -2,6 +2,7 @@
 
 use crate::model::{Document, PartKind};
 use crate::netlist::Netlist;
+use elab_sim::digital::{CompKind, DigitalSim, Logic};
 use elab_sim::{Simulator, TranOptions};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -114,6 +115,97 @@ pub fn record(doc: &Document, nl: &Netlist, t_stop: f64) -> Result<ScopeData, St
         traces.push(Trace { name, color_idx, pts: res.time.iter().zip(v).map(|(&t, v)| [t, v]).collect() });
     }
     Ok(ScopeData { traces, t_stop, millis: t0.elapsed().as_secs_f64() * 1e3, steps: sim.stats.accepted_steps })
+}
+
+// ---------------------------------------------------------------------------
+// Digitalteil
+// ---------------------------------------------------------------------------
+
+/// Zeilen des Logikanalysators in Dokumentreihenfolge: (Name, Netz).
+/// Schalter, Taster und Takte zeigen ihren Ausgang, Anzeigen und Messpunkte ihr Netz.
+pub fn analyzer_rows(doc: &Document, nl: &Netlist) -> Vec<(String, usize)> {
+    let Some(d) = &nl.digital else { return Vec::new() };
+    doc.parts
+        .iter()
+        .filter_map(|p| {
+            let pn = nl.pin_nets.get(&p.id)?;
+            match p.kind {
+                PartKind::LogicInput { .. } | PartKind::Button | PartKind::Clock { .. } | PartKind::LogicLed { .. } => Some((p.name.clone(), pn[0])),
+                PartKind::Probe if d.is_digital_net[pn[0]] => Some((p.name.clone(), pn[0])),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Erzeugt den Digitalsimulator für die Netzliste (beobachtet die Analysator-Netze).
+pub fn digital_sim(doc: &Document, nl: &Netlist) -> Option<DigitalSim> {
+    let d = nl.digital.as_ref()?;
+    let mut s = DigitalSim::new(nl.nets.len(), d.comps.clone());
+    for (_, net) in analyzer_rows(doc, nl) {
+        s.watch(net);
+    }
+    Some(s)
+}
+
+/// Wahrheitstabelle einer kombinatorischen Schaltung.
+#[derive(Clone, Debug)]
+pub struct TruthTable {
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+    /// Eingangsbelegung und Ausgangspegel je Zeile; `false` im dritten Feld: schwingt
+    pub rows: Vec<(Vec<bool>, Vec<Logic>, bool)>,
+}
+
+/// Berechnet die Wahrheitstabelle: Jede Eingangskombination wird in einem frischen
+/// Simulator eingestellt, bis die Schaltung zur Ruhe kommt.
+pub fn truth_table(doc: &Document, nl: &Netlist) -> Result<TruthTable, String> {
+    let d = nl.digital.as_ref().ok_or("Die Schaltung enthält keine Digitalbausteine.")?;
+    if d.sequential {
+        return Err("Die Schaltung hat ein Gedächtnis (Takt, Flipflop oder Zähler). Eine Wahrheitstabelle gibt es nur für                     Schaltnetze ohne Speicher. Den Ablauf zeigt der Logikanalysator."
+            .into());
+    }
+    let mut inputs: Vec<(&str, usize)> = doc
+        .parts
+        .iter()
+        .filter(|p| matches!(p.kind, PartKind::LogicInput { .. } | PartKind::Button))
+        .filter_map(|p| Some((p.name.as_str(), *d.comp_of.get(&p.id)?)))
+        .collect();
+    inputs.sort();
+    if inputs.is_empty() {
+        return Err("Setze Logikschalter als Eingänge (A, B, …).".into());
+    }
+    if inputs.len() > 6 {
+        return Err("Höchstens 6 Eingänge (64 Zeilen) werden tabelliert.".into());
+    }
+    let outputs: Vec<(String, usize)> = doc
+        .parts
+        .iter()
+        .filter_map(|p| {
+            let pn = nl.pin_nets.get(&p.id)?;
+            match p.kind {
+                PartKind::LogicLed { .. } => Some((p.name.clone(), pn[0])),
+                PartKind::Probe if d.is_digital_net[pn[0]] => Some((p.name.clone(), pn[0])),
+                _ => None,
+            }
+        })
+        .collect();
+    if outputs.is_empty() {
+        return Err("Setze Logik-Anzeigen oder Messpunkte als Ausgänge.".into());
+    }
+    let n = inputs.len();
+    let mut rows = Vec::new();
+    for mask in 0..(1u32 << n) {
+        let bits: Vec<bool> = (0..n).map(|k| mask >> (n - 1 - k) & 1 == 1).collect();
+        let mut comps = d.comps.clone();
+        for (k, &(_, c)) in inputs.iter().enumerate() {
+            comps[c].kind = CompKind::Input(Logic::from_bool(bits[k]));
+        }
+        let mut s = DigitalSim::new(nl.nets.len(), comps);
+        let ok = s.settle(1_000_000);
+        rows.push((bits, outputs.iter().map(|&(_, net)| s.net(net)).collect(), ok));
+    }
+    Ok(TruthTable { inputs: inputs.iter().map(|i| i.0.to_string()).collect(), outputs: outputs.into_iter().map(|o| o.0).collect(), rows })
 }
 
 /// Liest einen Wert mit SI-Präfix: „4k7“, „4,7 k“, „100n“, „10µF“, „1M“, „2.2 mA“.

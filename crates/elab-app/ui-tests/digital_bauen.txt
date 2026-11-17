@@ -1,0 +1,42 @@
+# Digitalschaltung von Grund auf: zwei Logikschalter, UND-Gatter, Anzeige.
+# Danach: absichtlicher Buskonflikt und Analog/Digital-Mischung (Fehlermeldung).
+# Aufruf: cargo run --release -- --script crates/elab-app/ui-tests/digital_bauen.txt
+
+wait 10
+cmd N
+palette digital
+wait 3
+tool Logikschalter
+click 0 0
+tool Logikschalter
+click 0 4
+tool UND-Gatter
+click 10 2
+tool Logik-Anzeige
+click 18 2
+drag 2 0 7 1
+drag 2 4 7 3
+drag 13 2 16 2
+wait 3
+dump ui-out/d_built.json
+click 0 0
+click 0 4
+wait 4
+dump ui-out/d_on.json
+fit
+wait 4
+shot ui-out/d_on.ppm
+# Buskonflikt: Ausgänge A und B verbinden, dann A ausschalten
+drag 2 0 2 4
+click 0 0
+wait 4
+dump ui-out/d_conflict.json
+shot ui-out/d_conflict.ppm
+cmd Z
+# Analog/Digital-Mischung: Widerstand in die Leitung zwischen B und Gatter
+tool Widerstand
+click 4 4
+wait 4
+dump ui-out/d_mixed.json
+shot ui-out/d_mixed.ppm
+quit

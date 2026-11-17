@@ -10,7 +10,8 @@
 //! `example N`, `tool select|wire|<Bauteil>`, `move X Y`, `click X Y`, `shiftclick X Y`,
 //! `dblclick X Y`, `clickpx X Y`, `type TEXT`, `drag X1 Y1 X2 Y2`, `key NAME`, `cmd NAME`, `cmdshift NAME`,
 //! `select NAME`, `scope on|off`, `tutorial on|off`, `timebase SEKUNDEN`, `fit`,
-//! `wait N`, `shot DATEI.ppm`, `dump DATEI.json`, `quit`.
+//! `advance SEKUNDEN`, `hold X Y`, `release`, `panel scope|analyzer|truth`, `palette analog|digital`,
+//! `pause on|off`, `wait N`, `shot DATEI.ppm`, `dump DATEI.json`, `quit`.
 
 use egui::{Event, Key, Modifiers, PointerButton, Pos2};
 use std::collections::VecDeque;
@@ -38,6 +39,17 @@ pub enum Cmd {
     Wait(u32),
     Shot(String),
     Dump(String),
+    /// Digitalsimulation um so viele Sekunden voranbringen
+    Advance(f64),
+    /// Taster an Rasterposition gedrückt halten / loslassen
+    Hold(f32, f32),
+    Release,
+    /// Reiter der unteren Leiste: scope, analyzer, truth
+    Panel(String),
+    /// Palettenreiter: digital on/off
+    Palette(bool),
+    /// Digitalsimulation anhalten
+    Pause(bool),
     Quit,
 }
 
@@ -77,6 +89,12 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
             "wait" => Cmd::Wait(f(1)? as u32),
             "shot" => Cmd::Shot(t.get(1).unwrap_or(&"shot.ppm").to_string()),
             "dump" => Cmd::Dump(t.get(1).unwrap_or(&"-").to_string()),
+            "advance" => Cmd::Advance(f(1)? as f64),
+            "hold" => Cmd::Hold(f(1)?, f(2)?),
+            "release" => Cmd::Release,
+            "panel" => Cmd::Panel(t.get(1).unwrap_or(&"scope").to_string()),
+            "palette" => Cmd::Palette(t.get(1).is_some_and(|s| *s == "digital")),
+            "pause" => Cmd::Pause(on(1)),
             "quit" => Cmd::Quit,
             other => return Err(format!("Zeile {}: unbekannter Befehl {other}", ln + 1)),
         });

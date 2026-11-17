@@ -4,7 +4,8 @@
 //! (elektrisch ein Knoten). Aus den Netzen und Bauteilen entsteht die
 //! `elab_sim::Circuit`, die der Simulator rechnet.
 
-use crate::model::{Document, PartKind, P};
+use crate::model::{Document, PartKind, PinRole, P};
+use elab_sim::digital::{Comp, CompKind, Logic};
 use elab_sim::{Circuit, ElementKind, SimError, Waveform};
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -33,7 +34,97 @@ pub struct Netlist {
     pub excluded: Vec<u32>,
     /// Zweipole, deren beide Anschlüsse am selben Netz hängen (überbrückt, stromlos).
     pub bridged: Vec<u32>,
+    /// Digitalteil der Schaltung (falls Digitalbausteine vorhanden)
+    pub digital: Option<DigitalNetlist>,
     pub error: Option<String>,
+}
+
+/// Digitalteil: Bausteine für [`elab_sim::digital::DigitalSim`].
+#[derive(Clone, Debug)]
+pub struct DigitalNetlist {
+    pub comps: Vec<Comp>,
+    /// Baustein je Bauteil (Schalter, Taster, Takt, Gatter, Flipflops, Zähler)
+    pub comp_of: HashMap<u32, usize>,
+    /// Netz wird digital betrieben
+    pub is_digital_net: Vec<bool>,
+    /// Enthält Takt, Flipflops oder Zähler (also Gedächtnis)
+    pub sequential: bool,
+    pub has_clock: bool,
+}
+
+/// Baut den Digitalteil und prüft, dass Analog- und Digitalnetze getrennt sind.
+fn build_digital(doc: &Document, nl: &mut Netlist) {
+    let digital_parts: Vec<_> = doc.parts.iter().filter(|p| p.kind.is_digital()).collect();
+    if digital_parts.is_empty() {
+        return;
+    }
+    let n = nl.nets.len();
+    let mut is_dig = vec![false; n];
+    let mut analog_part: Vec<Option<&str>> = vec![None; n];
+    let mut digital_part: Vec<Option<&str>> = vec![None; n];
+    for part in &doc.parts {
+        let digital = part.kind.is_digital();
+        let neutral = matches!(part.kind, PartKind::Ground | PartKind::Probe);
+        for &net in &nl.pin_nets[&part.id] {
+            if digital {
+                is_dig[net] = true;
+                digital_part[net].get_or_insert(&part.name);
+            } else if !neutral {
+                analog_part[net].get_or_insert(&part.name);
+            }
+        }
+    }
+    for k in 0..n {
+        if let (Some(a), Some(d), false) = (analog_part[k], digital_part[k], nl.nets[k].is_gnd) {
+            nl.error.get_or_insert(format!(
+                "{d} (digital) und {a} (analog) hängen am selben Netz {}. Die Kopplung von Analog- und Digitaltechnik folgt in Phase 4.",
+                nl.nets[k].name
+            ));
+        }
+    }
+    let mut comps = Vec::new();
+    let mut comp_of = HashMap::new();
+    let (mut sequential, mut has_clock) = (false, false);
+    for part in &digital_parts {
+        let pn = &nl.pin_nets[&part.id];
+        let roles = part.kind.pin_roles();
+        let ins: Vec<usize> = pn.iter().zip(&roles).filter(|(_, r)| **r == PinRole::In).map(|(n, _)| *n).collect();
+        let outs: Vec<usize> = pn.iter().zip(&roles).filter(|(_, r)| **r == PinRole::Out).map(|(n, _)| *n).collect();
+        let (kind, delay) = match &part.kind {
+            PartKind::Gate { gate } => (CompKind::Gate(gate.to_sim()), 10),
+            PartKind::LogicInput { on } => (CompKind::Input(Logic::from_bool(*on)), 0),
+            PartKind::Button => (CompKind::Input(Logic::L0), 0),
+            PartKind::Clock { freq } => {
+                has_clock = true;
+                sequential = true;
+                (CompKind::Clock { half_period: (0.5e9 / freq.max(1e-6)).round().max(1.0) as u64 }, 0)
+            }
+            PartKind::LogicHigh => (CompKind::Const(Logic::L1), 0),
+            PartKind::DFlipFlop => {
+                sequential = true;
+                (CompKind::DFlipFlop, 15)
+            }
+            PartKind::JkFlipFlop => {
+                sequential = true;
+                (CompKind::JkFlipFlop, 15)
+            }
+            PartKind::Counter4 => {
+                sequential = true;
+                (CompKind::Counter4, 20)
+            }
+            PartKind::LogicLed { .. } | PartKind::SevenSeg => continue,
+            _ => continue,
+        };
+        comp_of.insert(part.id, comps.len());
+        comps.push(Comp { kind, inputs: ins, outputs: outs, delay });
+    }
+    // Masse an einem Digitalnetz: fester Pegel 0
+    if let Some(g) = nl.nets.iter().position(|x| x.is_gnd) {
+        if is_dig[g] {
+            comps.push(Comp { kind: CompKind::Const(Logic::L0), inputs: vec![], outputs: vec![g], delay: 0 });
+        }
+    }
+    nl.digital = Some(DigitalNetlist { comps, comp_of, is_digital_net: is_dig, sequential, has_clock });
 }
 
 struct Dsu(Vec<usize>);
@@ -134,9 +225,10 @@ pub fn build(doc: &Document) -> Netlist {
     let pin_nets: HashMap<u32, Vec<usize>> = doc.parts.iter().map(|p| (p.id, p.pins().iter().map(|q| net_of[q]).collect())).collect();
     let wire_net: HashMap<u32, usize> = doc.wires.iter().map(|w| (w.id, net_of[&w.a])).collect();
 
-    // 4. Erreichbarkeit ab Masse über Bauteile mit zwei Anschlüssen
+    // 4. Erreichbarkeit ab Masse über analoge Zweipole
+    let is_analog = |k: &PartKind| !k.is_digital() && !matches!(k, PartKind::Ground | PartKind::Probe);
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); nets.len()];
-    for part in &doc.parts {
+    for part in doc.parts.iter().filter(|p| is_analog(&p.kind)) {
         let pn = &pin_nets[&part.id];
         if pn.len() == 2 {
             adj[pn[0]].push(pn[1]);
@@ -155,7 +247,7 @@ pub fn build(doc: &Document) -> Netlist {
         }
     }
 
-    // 5. Simulator-Schaltung aufbauen
+    // 5. Netlisten-Struktur
     let mut nl = Netlist {
         circuit: Circuit::new(),
         nets,
@@ -165,12 +257,19 @@ pub fn build(doc: &Document) -> Netlist {
         simulated: HashMap::new(),
         excluded: Vec::new(),
         bridged: Vec::new(),
+        digital: None,
         error: None,
     };
-    let electrical: Vec<_> = doc.parts.iter().filter(|p| !matches!(p.kind, PartKind::Ground | PartKind::Probe)).collect();
+
+    // 6. Digitalteil
+    build_digital(doc, &mut nl);
+
+    // 7. Analogteil
+    let electrical: Vec<_> = doc.parts.iter().filter(|p| is_analog(&p.kind)).collect();
     if !has_gnd {
         if !electrical.is_empty() {
-            nl.error = Some("Es fehlt die Masse (⏚). Ohne Bezugspunkt gibt es keine Spannungen, setze ein Masse-Symbol an den Minuspol.".into());
+            nl.error
+                .get_or_insert("Es fehlt die Masse (⏚). Ohne Bezugspunkt gibt es keine Spannungen, setze ein Masse-Symbol an den Minuspol.".into());
         }
         nl.excluded = electrical.iter().map(|p| p.id).collect();
         return nl;
@@ -205,7 +304,7 @@ pub fn build(doc: &Document) -> Netlist {
             PartKind::Diode { kind } => ElementKind::Diode { a, k: b, model: kind.model() },
             PartKind::Led { color } => ElementKind::Diode { a, k: b, model: color.model() },
             PartKind::Switch { closed } => ElementKind::Switch { a, b, closed: *closed, r_on: 1e-3, r_off: 1e15 },
-            PartKind::Ground | PartKind::Probe => unreachable!(),
+            _ => unreachable!("nur analoge Bauteile"),
         };
         match nl.circuit.add(&part.name, kind) {
             Ok(_) => {

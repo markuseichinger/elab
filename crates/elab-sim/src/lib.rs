@@ -22,6 +22,7 @@
 
 pub mod analysis;
 pub mod circuit;
+pub mod digital;
 pub mod diode;
 pub mod linalg;
 pub mod waveform;

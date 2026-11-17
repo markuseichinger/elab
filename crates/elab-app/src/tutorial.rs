@@ -1,7 +1,7 @@
 //! Tutorial-Leiste: Erklärungen zu jedem Bauteil und Grundbegriff.
 //! Ein Klick auf ein Bauteil (Palette oder Schaltplan) setzt das Thema.
 
-use elab_app::model::PartKind;
+use elab_app::model::{GateType, PartKind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Topic {
@@ -26,6 +26,20 @@ pub enum Topic {
     Led,
     Switch,
     Probe,
+    // Digital
+    Logic,
+    Gate(GateType),
+    LogicInput,
+    Button,
+    Clock,
+    LogicHigh,
+    LogicLed,
+    DFlipFlop,
+    JkFlipFlop,
+    Counter,
+    SevenSeg,
+    Analyzer,
+    TruthTable,
 }
 
 pub struct Doc {
@@ -53,12 +67,36 @@ impl Topic {
             PartKind::Switch { .. } => Topic::Switch,
             PartKind::Ground => Topic::Ground,
             PartKind::Probe => Topic::Probe,
+            PartKind::Gate { gate } => Topic::Gate(*gate),
+            PartKind::LogicInput { .. } => Topic::LogicInput,
+            PartKind::Button => Topic::Button,
+            PartKind::Clock { .. } => Topic::Clock,
+            PartKind::LogicHigh => Topic::LogicHigh,
+            PartKind::LogicLed { .. } => Topic::LogicLed,
+            PartKind::DFlipFlop => Topic::DFlipFlop,
+            PartKind::JkFlipFlop => Topic::JkFlipFlop,
+            PartKind::Counter4 => Topic::Counter,
+            PartKind::SevenSeg => Topic::SevenSeg,
         }
     }
 
     /// Themen für das Inhaltsverzeichnis.
     pub const BASICS: [Topic; 9] =
         [Topic::Welcome, Topic::Editor, Topic::Nets, Topic::Ground, Topic::Ohm, Topic::Kirchhoff, Topic::OperatingPoint, Topic::Colors, Topic::Scope];
+
+    /// Themen der Digitaltechnik für das Inhaltsverzeichnis.
+    pub const DIGITAL: [Topic; 10] = [
+        Topic::Logic,
+        Topic::Gate(GateType::And),
+        Topic::Gate(GateType::Or),
+        Topic::Gate(GateType::Not),
+        Topic::Gate(GateType::Xor),
+        Topic::DFlipFlop,
+        Topic::JkFlipFlop,
+        Topic::Counter,
+        Topic::Analyzer,
+        Topic::TruthTable,
+    ];
 }
 
 pub fn doc(t: Topic) -> Doc {
@@ -283,6 +321,220 @@ pub fn doc(t: Topic) -> Doc {
             typical: "Setze Messpunkte an Ein- und Ausgang. Jeder bekommt eine eigene Farbe, dieselbe wie im Oszilloskop.",
             watch: "Ein Messpunkt darf mitten auf einem Draht sitzen. Er verbindet sich automatisch mit dem Draht.",
             related: &[Scope, Nets, Ground],
+        },
+        Logic => Doc {
+            title: "Logikpegel 0, 1, X und Z",
+            what: "In der Digitaltechnik zählt nur, ob eine Spannung als „niedrig“ (0) oder „hoch“ (1) gilt. Die Drähte \
+                   zeigen das farbig: hellgrün ist 1, dunkelgrün ist 0.\n\n\
+                   Dazu kennt der Simulator zwei Sonderzustände wie echte Logiksimulatoren: \
+                   X (rot) heißt unbestimmt, etwa wenn zwei Ausgänge gegeneinander treiben (Buskonflikt) oder ein Eingang nirgends \
+                   angeschlossen ist. Z (blaugrau) heißt hochohmig: Niemand treibt das Netz.\n\n\
+                   Jedes Gatter braucht eine Laufzeit von 10 ns, bis sein Ausgang reagiert. Deshalb gibt es wie in echter \
+                   Hardware kurze Störimpulse (Glitches), wenn Signale unterschiedlich lange Wege nehmen.",
+            math: "0  Low   (CMOS 5 V: < 1,5 V)\n1  High  (CMOS 5 V: > 3,5 V)\nX  unbestimmt / Konflikt\nZ  hochohmig, kein Treiber",
+            typical: "Ein offener CMOS-Eingang ist in der Praxis gefährlich: Er fängt Störungen ein und kann zufällig kippen. \
+                      Darum zeigt der Simulator ihn als X.",
+            watch: "Verbinde zwei Logikschalter mit demselben Draht und stelle sie unterschiedlich: Das Netz wird rot (Konflikt).",
+            related: &[Gate(GateType::And), Analyzer, LogicInput],
+        },
+        Gate(g) => gate_doc(g),
+        LogicInput => Doc {
+            title: "Logikschalter",
+            what: "Ein Schalter, der fest 0 oder 1 liefert. Ein Klick auf den Schalter im Schaltplan legt ihn um. \
+                   Logikschalter werden automatisch A, B, C … benannt, so heißen sie auch in der Wahrheitstabelle.",
+            math: "Ausgang = 0 oder 1 (rastend)",
+            typical: "Zum Durchprobieren von Gattern und Schaltnetzen, für feste Steuersignale (Reset, Freigabe).",
+            watch: "Öffne die Wahrheitstabelle unten: Die Zeile der aktuellen Schalterstellung ist markiert. Ein Klick auf \
+                    eine Zeile stellt die Schalter entsprechend ein.",
+            related: &[Button, TruthTable, Logic],
+        },
+        Button => Doc {
+            title: "Taster",
+            what: "Liefert 1, solange du die Maustaste darauf gedrückt hältst, sonst 0. Ideal für Takt- und Setz-/Rücksetzsignale von Hand.",
+            math: "Ausgang = 1, solange gedrückt",
+            typical: "Echte Taster prellen: Beim Drücken schließt und öffnet der Kontakt mehrmals in wenigen Millisekunden. \
+                      Der simulierte Taster prellt nicht.",
+            watch: "Beispiel „RS-Flipflop“: Ein kurzer Druck auf S setzt den Speicher, der Zustand bleibt nach dem Loslassen erhalten.",
+            related: &[LogicInput, DFlipFlop],
+        },
+        Clock => Doc {
+            title: "Taktgeber",
+            what: "Erzeugt ein Rechtecksignal mit einstellbarer Frequenz. Der Takt läuft in Echtzeit, mit dem Zeitlupenregler \
+                   im Logikanalysator verlangsamst oder beschleunigst du ihn.",
+            math: "Periode T = 1 / f, je T/2 auf 1 und auf 0",
+            typical: "Zum Zuschauen 1 … 4 Hz. In echten Schaltungen liefert ein Quarz MHz bis GHz.",
+            watch: "Takte einen Zähler: Bei jeder steigenden Flanke (0 → 1) zählt er eins weiter.",
+            related: &[Counter, DFlipFlop, Analyzer],
+        },
+        LogicHigh => Doc {
+            title: "Fester Pegel 1",
+            what: "Legt ein Netz fest auf 1, wie ein Anschluss an die Versorgungsspannung (VCC). Für eine feste 0 \
+                   nimmst du das Masse-Symbol.",
+            math: "Ausgang = 1 (VCC)\nMasse = 0 (GND)",
+            typical: "Unbenutzte Eingänge auf einen festen Pegel legen; beim JK-Flipflop J = K = 1 für den Kippbetrieb.",
+            watch: "Ein UND-Gatter mit einem Eingang auf 1 gibt den anderen Eingang unverändert weiter.",
+            related: &[Logic, JkFlipFlop],
+        },
+        LogicLed => Doc {
+            title: "Logik-Anzeige",
+            what: "Leuchtet bei 1, bleibt bei 0 dunkel. Bei X oder Z zeigt sie ein Fragezeichen. \
+                   Logik-Anzeigen sind die Ausgänge der Wahrheitstabelle.",
+            math: "leuchtet ⇔ Eingang = 1",
+            typical: "Eine echte LED am Logikausgang braucht einen Vorwiderstand. Die Logik-Anzeige ist idealisiert.",
+            watch: "Benenne die Anzeige im Inspektor, z. B. „Summe“. Der Name erscheint in Tabelle und Analysator.",
+            related: &[TruthTable, Analyzer],
+        },
+        DFlipFlop => Doc {
+            title: "D-Flipflop",
+            what: "Der Grundbaustein jedes digitalen Speichers. Bei jeder steigenden Taktflanke (C: 0 → 1) übernimmt er den Wert \
+                   an D und hält ihn bis zur nächsten Flanke, egal was D dazwischen macht. /Q (gesprochen „Q quer“, im Symbol mit Überstrich) ist immer das Gegenteil von Q.\n\n\
+                   Verbindet man /Q mit D, kippt das Flipflop bei jeder Flanke: Die Frequenz halbiert sich (Frequenzteiler).",
+            math: "Steigende Flanke an C:  Q ← D\nsonst:                  Q bleibt\n/Q = NICHT Q",
+            typical: "Register, Schieberegister, Synchronisation von Signalen. Das Dreieck am C-Eingang kennzeichnet die Flankensteuerung.",
+            watch: "Beispiel „Frequenzteiler“: Im Logikanalysator hat Q1 die halbe, Q2 ein Viertel der Taktfrequenz.",
+            related: &[JkFlipFlop, Clock, Counter],
+        },
+        JkFlipFlop => Doc {
+            title: "JK-Flipflop",
+            what: "Ein vielseitiges Flipflop mit zwei Steuereingängen. Bei der steigenden Taktflanke gilt: J setzt, K setzt zurück, \
+                   beide zusammen lassen es kippen, keiner von beiden hält den Zustand.",
+            math: "J K │ Q nach der Flanke\n0 0 │ Q (halten)\n0 1 │ 0 (rücksetzen)\n1 0 │ 1 (setzen)\n1 1 │ /Q (kippen)",
+            typical: "Mit J = K = 1 (Pegel 1) wird es zum Kippflipflop (T-Flipflop), der Baustein klassischer Zähler.",
+            watch: "Lege J und K auf Logikschalter, takte mit einem Taster und probiere alle vier Fälle durch.",
+            related: &[DFlipFlop, LogicHigh, Counter],
+        },
+        Counter => Doc {
+            title: "4-Bit-Binärzähler",
+            what: "Zählt bei jeder steigenden Taktflanke um eins weiter, von 0 bis 15, danach wieder 0 (Überlauf). Die Ausgänge \
+                   Q0…Q3 zeigen den Stand als Binärzahl. R = 1 setzt ihn sofort auf 0 (asynchroner Reset).",
+            math: "Stand = Q0·1 + Q1·2 + Q2·4 + Q3·8\nQ0 hat die halbe Taktfrequenz, Q1 ein Viertel …",
+            typical: "Entspricht einem 74HC161/163. Zähler teilen Frequenzen, zählen Ereignisse und erzeugen Adressen.",
+            watch: "Im Logikanalysator siehst du: Jedes Bit hat die halbe Frequenz des vorigen.",
+            related: &[Clock, SevenSeg, DFlipFlop],
+        },
+        SevenSeg => Doc {
+            title: "7-Segment-Anzeige",
+            what: "Zeigt eine 4-Bit-Binärzahl als Ziffer 0…9 bzw. A…F (hexadezimal) an. Der Decoder ist eingebaut: Die Eingänge \
+                   haben die Wertigkeiten 1, 2, 4 und 8. Ist ein Eingang offen oder unbestimmt, erscheint ein Strich.",
+            math: "Wert = E1·1 + E2·2 + E4·4 + E8·8\nSegmente a…g",
+            typical: "In echten Schaltungen sitzt dazwischen ein Decoder-IC wie der 74HC4511 (nur 0…9).",
+            watch: "Verbinde die Ausgänge eines Zählers mit der Anzeige und sieh zu, wie sie hochzählt.",
+            related: &[Counter, Logic],
+        },
+        Analyzer => Doc {
+            title: "Logikanalysator",
+            what: "Zeichnet die Pegel aller Schalter, Taster, Takte, Logik-Anzeigen und digitalen Messpunkte über die Zeit auf. \
+                   Die rechte Kante ist „jetzt“. So siehst du Abläufe in Schaltungen mit Gedächtnis: Flanken, Teilerverhältnisse, Zählfolgen.",
+            math: "Zeitachse: letzte Sekunden bis jetzt\nhoch = 1, tief = 0, rot = X, Mitte = Z",
+            typical: "Mit dem Zeitlupenregler läuft die Simulation langsamer oder schneller als echt, ⏸ hält sie an.",
+            watch: "Vergleiche Takt und Q eines D-Flipflops: Q ändert sich nur bei steigenden Taktflanken.",
+            related: &[Clock, DFlipFlop, TruthTable],
+        },
+        TruthTable => Doc {
+            title: "Wahrheitstabelle",
+            what: "Listet für jede Kombination der Eingänge (Logikschalter, Taster) die Ausgänge (Logik-Anzeigen, Messpunkte). \
+                   Das funktioniert für Schaltnetze, also Schaltungen ohne Gedächtnis: Der Ausgang hängt nur von den aktuellen Eingängen ab.\n\n\
+                   Die Zeile der aktuellen Schalterstellung ist hervorgehoben. Ein Klick auf eine Zeile stellt die Schalter ein.",
+            math: "n Eingänge → 2ⁿ Zeilen\n2 Eingänge: 00, 01, 10, 11",
+            typical: "Aus der Tabelle liest man die Schaltfunktion ab, z. B. Summe = A XOR B, Übertrag = A UND B beim Halbaddierer.",
+            watch: "Baue eine Funktion aus NAND-Gattern nach und vergleiche die Tabelle mit dem Original.",
+            related: &[LogicInput, LogicLed, Analyzer],
+        },
+    }
+}
+
+fn gate_doc(g: GateType) -> Doc {
+    use Topic::*;
+    let related: &'static [Topic] = &[Logic, TruthTable, Gate(GateType::Nand)];
+    match g {
+        GateType::And => Doc {
+            title: "UND-Gatter (AND)",
+            what: "Der Ausgang ist nur 1, wenn alle Eingänge 1 sind. Wie zwei Schalter in Reihe: Nur wenn beide geschlossen sind, fließt Strom.",
+            math: "A B │ Y
+0 0 │ 0
+0 1 │ 0
+1 0 │ 0
+1 1 │ 1
+Y = A ∧ B",
+            typical: "Freigabe eines Signals: Y folgt A, solange B = 1 ist. IEC-Symbol: „&“.",
+            watch: "Eine 0 an einem Eingang erzwingt Y = 0, egal was am anderen anliegt, sogar bei X.",
+            related,
+        },
+        GateType::Or => Doc {
+            title: "ODER-Gatter (OR)",
+            what: "Der Ausgang ist 1, sobald mindestens ein Eingang 1 ist. Wie zwei Schalter parallel.",
+            math: "A B │ Y
+0 0 │ 0
+0 1 │ 1
+1 0 │ 1
+1 1 │ 1
+Y = A ∨ B",
+            typical: "Mehrere Auslöser für dieselbe Aktion (z. B. Alarm von mehreren Sensoren). IEC-Symbol: „≥1“.",
+            watch: "Vergleiche mit XOR: Der Unterschied liegt nur in der letzten Zeile.",
+            related,
+        },
+        GateType::Not => Doc {
+            title: "NICHT-Gatter (Inverter)",
+            what: "Kehrt den Pegel um: aus 0 wird 1, aus 1 wird 0. Der Kreis am Ausgang steht im IEC-Symbol für die Negation.",
+            math: "A │ Y
+0 │ 1
+1 │ 0
+Y = ¬A",
+            typical: "Drei Inverter im Ring schwingen von selbst (Ringoszillator), die Frequenz bestimmt die Gatterlaufzeit.",
+            watch: "Schalte ein NICHT-Gatter auf sich selbst zurück (Ausgang an Eingang): Der Simulator meldet eine Dauerschwingung.",
+            related,
+        },
+        GateType::Nand => Doc {
+            title: "NAND-Gatter",
+            what: "UND mit negiertem Ausgang: Der Ausgang ist nur dann 0, wenn alle Eingänge 1 sind. NAND ist universell:                    Aus NAND-Gattern allein lässt sich jede andere Logikfunktion bauen.",
+            math: "A B │ Y
+0 0 │ 1
+0 1 │ 1
+1 0 │ 1
+1 1 │ 0
+Y = ¬(A ∧ B)",
+            typical: "Der 74HC00 enthält vier NAND-Gatter. Ein NICHT entsteht, indem man beide Eingänge verbindet.",
+            watch: "Baue ein ODER aus drei NAND-Gattern: zwei als Inverter vor einem NAND (De Morgan).",
+            related,
+        },
+        GateType::Nor => Doc {
+            title: "NOR-Gatter",
+            what: "ODER mit negiertem Ausgang: nur 1, wenn alle Eingänge 0 sind. Wie NAND ist NOR universell.                    Zwei rückgekoppelte NOR-Gatter bilden einen Speicher (RS-Flipflop).",
+            math: "A B │ Y
+0 0 │ 1
+0 1 │ 0
+1 0 │ 0
+1 1 │ 0
+Y = ¬(A ∨ B)",
+            typical: "Die Apollo-Bordcomputer bestanden fast nur aus NOR-Gattern.",
+            watch: "Beispiel „RS-Flipflop“: Die Rückkopplung macht aus zwei Gattern einen 1-Bit-Speicher.",
+            related,
+        },
+        GateType::Xor => Doc {
+            title: "XOR-Gatter (Exklusiv-ODER)",
+            what: "Der Ausgang ist 1, wenn die Eingänge verschieden sind. Damit addiert XOR zwei Bits ohne Übertrag.",
+            math: "A B │ Y
+0 0 │ 0
+0 1 │ 1
+1 0 │ 1
+1 1 │ 0
+Y = A ⊕ B",
+            typical: "Halbaddierer (Summe = A XOR B), Paritätsprüfung, gesteuerter Inverter (B = 1 kehrt A um). IEC-Symbol: „=1“.",
+            watch: "Beispiel „Halbaddierer“: Summe und Übertrag in der Wahrheitstabelle ergeben zusammen A + B.",
+            related,
+        },
+        GateType::Xnor => Doc {
+            title: "XNOR-Gatter (Äquivalenz)",
+            what: "XOR mit negiertem Ausgang: 1, wenn beide Eingänge gleich sind. Damit vergleicht man Bits.",
+            math: "A B │ Y
+0 0 │ 1
+0 1 │ 0
+1 0 │ 0
+1 1 │ 1
+Y = ¬(A ⊕ B)",
+            typical: "Komparatoren: Zwei Zahlen sind gleich, wenn alle Bitpaare per XNOR 1 liefern.",
+            watch: "Schalte zwei Logikschalter auf ein XNOR: Die Anzeige leuchtet bei Gleichstand.",
+            related,
         },
     }
 }
