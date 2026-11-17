@@ -3,87 +3,100 @@
 Schaltungen bauen, simulieren und beim Arbeiten zusehen: ein Lernprogramm für
 Elektronik in Rust, als Gegenstück zu [nnlab](https://github.com/markuseichinger/nnlab).
 
-> **Stand: Phase 0** – eigenständiger Simulationskern mit Referenztests.
-> Editor und Oberfläche (egui) folgen in Phase 1.
+![elab mit Einweggleichrichter, Tutorial und Oszilloskop](docs/screenshot.png)
+
+> **Stand: Phase 1** – Schaltplan-Editor mit Live-Simulation, Tutorial und Oszilloskop.
+
+## Starten
+
+```bash
+cargo run --release                 # startet mit dem Beispiel „Spannungsteiler“
+cargo run --release -- datei.elab   # öffnet eine gespeicherte Schaltung
+cargo test --workspace              # alle Tests (Simulator, Netzliste, Modell)
+```
+
+## Was die App kann
+
+- **Schaltplan-Editor** auf einem Raster: Bauteile platzieren, drehen, verschieben,
+  löschen; Drähte vom Anschluss aus ziehen oder Ecke für Ecke verlegen.
+  Angeschlossene Drähte gehen beim Verschieben mit und werden um Bauteile herum verlegt.
+- **Live-Simulation:** Nach jeder Änderung wird der Arbeitspunkt neu berechnet.
+  Drähte färben sich nach ihrer Spannung (grau 0 V, orange positiv, blau negativ),
+  LEDs und Glühlampen leuchten entsprechend ihrem Strom bzw. ihrer Leistung.
+- **Infofenster** beim Überfahren: Spannung, Strom, Leistung, Netzname, Leitzustand der Diode.
+- **Inspektor:** Werte mit SI-Präfix eingeben (`4k7`, `100n`, `2,2 mA`, `1M`) und
+  live sehen, wie U, I und P reagieren, inkl. Ohm-Probe und Warnungen (¼-W-Grenze, LED-Überstrom).
+- **Oszilloskop:** Zeitverlauf an allen Messpunkten, Zeitbasis 100 µs … 1 s,
+  automatische Neumessung nach jeder Änderung.
+- **Tutorial-Leiste** wie in nnlab: Erklärung, Formeln, übliche Werte und Experimente
+  zu jedem Bauteil und zu den Grundlagen (Knoten, Masse, Ohm, Kirchhoff, Arbeitspunkt …),
+  mit Live-Werten des ausgewählten Bauteils.
+- **Verständliche Fehler:** fehlende Masse, kurzgeschlossene Quellen, doppelte Namen,
+  nicht verbundene Bauteile (werden markiert und übersprungen statt die Simulation abzubrechen).
+- **Undo/Redo** für jede Änderung, **Speichern/Laden** als `.elab` (JSON),
+  **sechs Beispielschaltungen**.
+
+### Bauteile
+
+Gleich-, Wechsel- und Rechteckspannung, Stromquelle, Widerstand, Kondensator, Spule,
+Glühlampe, Diode (1N4148, 1N4007, Lehrbuch), LED (rot, gelb, grün, blau, weiß),
+Schalter, Masse, Messpunkt. Schaltzeichen nach IEC 60617.
+
+### Bedienung
+
+| Aktion | Eingabe |
+|---|---|
+| Bauteil platzieren | in der Palette anklicken, dann in den Schaltplan klicken |
+| Draht | vom Anschluss aus ziehen · oder `W`, Klick je Ecke, Doppelklick/`Esc` beendet, Leertaste wechselt den Knick |
+| Drehen / Löschen | `R` / `Entf` oder `⌫` |
+| Schalter umlegen | Doppelklick |
+| Mehrfachauswahl | Rahmen ziehen, `⇧`-Klick, `⌘A` |
+| Ansicht | Zwei-Finger-Wischen verschiebt, Pinch oder `⌘`+Mausrad zoomt, „⤢ Einpassen“ |
+| Rückgängig / Wiederholen | `⌘Z` / `⇧⌘Z` |
+| Neu / Öffnen / Speichern | `⌘N` / `⌘O` / `⌘S` |
 
 ## Aufbau
 
 ```
 elab/
-└── crates/
-    └── elab-sim/        Simulationskern, ohne UI-Abhängigkeiten
-        ├── src/
-        │   ├── circuit.rs    Schaltungsmodell, Bauteile, Fehlermeldungen
-        │   ├── analysis.rs   MNA, Newton-Raphson, DC-Arbeitspunkt, Transientenanalyse
-        │   ├── diode.rs      Shockley-Modell mit pn-Spannungsbegrenzung
-        │   ├── waveform.rs   DC, Sinus, Puls/Rechteck, stückweise linear
-        │   └── linalg.rs     Dichte LU-Zerlegung mit Pivotisierung
-        ├── tests/reference.rs   Tests gegen analytische Lösungen
-        └── examples/demo.rs     Übersicht und Mini-Benchmark, CSV-Export
+├── crates/elab-sim/      Simulationskern ohne UI (Phase 0)
+│   ├── src/analysis.rs   MNA, Newton-Raphson, DC-Arbeitspunkt, Transientenanalyse
+│   ├── src/circuit.rs    Schaltungsmodell und Fehlermeldungen
+│   ├── src/diode.rs      Shockley-Modell mit pn-Spannungsbegrenzung
+│   ├── src/waveform.rs   DC, Sinus, Puls/Rechteck, stückweise linear
+│   └── tests/            Referenztests gegen analytische Lösungen
+└── crates/elab-app/      Oberfläche (egui/eframe 0.37, wie nnlab)
+    ├── src/model.rs      Schaltplan: Bauteile, Drähte, Raster, Undo
+    ├── src/netlist.rs    Schaltplan → Netze → Simulator-Schaltung
+    ├── src/sim.rs        Arbeitspunkt, Oszilloskop-Aufzeichnung, SI-Eingabe
+    ├── src/examples.rs   Beispielschaltungen
+    ├── src/editor.rs     Zeichenfläche, Werkzeuge, Live-Darstellung
+    ├── src/symbols.rs    Schaltzeichen
+    ├── src/tutorial.rs   Erklärtexte
+    ├── src/script.rs     Testskripte für automatisierte Oberflächentests
+    └── src/main.rs       Fenster, Panels, Inspektor, Oszilloskop, Dateien
 ```
 
-## Simulationsverfahren
+## Oberflächentests
 
-- **Modifizierte Knotenanalyse:** Unbekannte sind die Knotenspannungen und die
-  Zweigströme von Spannungsquellen und Spulen.
-- **Newton-Raphson** für Dioden mit SPICE-artiger Spannungsbegrenzung (`pnjlim`).
-  Wenn der direkte Versuch scheitert, greifen automatisch **gmin-Stepping**
-  und **Source-Stepping**.
-- **Transientenanalyse** mit Trapezregel. Direkt nach Knickstellen der Quellen
-  folgt ein Schritt Euler-rückwärts gegen Klingeln. Die **Schrittweite wird adaptiv**
-  über den lokalen Abbruchfehler gesteuert (Prädiktor-Korrektor nach Milne),
-  und Flanken von Puls-/Rechteckquellen werden exakt getroffen.
-- **Verständliche Fehlermeldungen** auf Deutsch, z. B. für schwebende Knoten,
-  parallele Spannungsquellen oder ungültige Werte.
-
-## Bauteile (Phase 0)
-
-Widerstand, Kondensator, Spule, Schalter, Spannungs- und Stromquelle mit
-DC/Sinus/Puls/PWL, Diode (Modelle: ideal, 1N4148, 1N4007, rote LED).
-
-## Ausprobieren
+Die App lässt sich per Skript fernsteuern. Echte Maus- und Tastaturereignisse werden
+eingespielt, Screenshots und der Dokumentzustand werden gespeichert:
 
 ```bash
-cargo test                                         # alle Referenztests
-cargo run --release --example demo                 # Übersicht + Laufzeiten
-cargo run --release --example demo -- plots/       # zusätzlich CSV je Schaltung
+cargo run --release -- --script crates/elab-app/ui-tests/schaltung_bauen.txt
 ```
 
-```rust
-use elab_sim::{Circuit, Simulator, TranOptions, Waveform};
-
-let mut c = Circuit::new();
-c.vsource("V1", "in", "gnd", Waveform::step(5.0, 0.0))?;
-c.resistor("R1", "in", "out", 1e3)?;
-c.capacitor("C1", "out", "gnd", 1e-6)?;
-
-let mut sim = Simulator::new(&c)?;
-let res = sim.transient(&TranOptions::new(5e-3, 2e-5))?;
-println!("U(τ) = {:.3} V", res.voltage_at("out", 1e-3)?);   // ≈ 3,161 V
-```
-
-## Referenztests
-
-| Test | Prüft gegen |
-|---|---|
-| Spannungsteiler, Überlagerung, Wheatstone-Brücke | Knotenanalyse von Hand |
-| Diode vorwärts/rückwärts, Diodenkette, LED, Diode an 1 Ω | Shockley-Gleichung (Bisektion) |
-| RC-Ladekurve, RL-Einschaltvorgang | e-Funktion, max. Abweichung < 0,1 % |
-| RC mit grobem h_max = τ | Schrittweitensteuerung allein hält die Genauigkeit |
-| LC-Schwingkreis | Periodendauer 2π√(LC), Amplitude nach 10 Perioden |
-| RLC-Sprungantwort | geschlossene Lösung, Überschwingen |
-| Rechteck auf RC | Flanken exakt getroffen, Endwerte |
-| Einweg- und Brückengleichrichter (230 V) | Spitzenwert, Brummspannung, kein Rückstrom |
-| Fehlerfälle | parallele Spannungsquellen, schwebende Knoten, ungültige Werte |
+Das Beispielskript baut eine LED-Schaltung von Grund auf, verdrahtet sie, verschiebt
+und dreht Bauteile und prüft Undo. Befehle: siehe `src/script.rs`.
 
 ## Fahrplan
 
 | Phase | Inhalt |
 |---|---|
 | **0** ✅ | Analogkern + Referenztests |
-| 1 | Schaltplan-Editor (egui): Raster, Platzieren, Drähte, Undo/Redo, Speichern |
+| **1** ✅ | Schaltplan-Editor, Live-Arbeitspunkt, Tutorial, Oszilloskop, Speichern/Laden |
 | 2 | Digital-Engine (0/1/X/Z, ereignisgesteuert), Gatter, Flipflops, 74xx, Logikanalysator |
-| 3 | Transistoren (BJT, MOSFET), Oszilloskop, Multimeter |
+| 3 | Transistoren (BJT, MOSFET), Multimeter, Poti und Taster |
 | 4 | Mixed-Signal-Brücke, OpAmp, 555, ADC/DAC, eigene ICs |
-| 5 | Stromfluss-Animation, Bauteil-Inspektor, Kennlinien, Lektionen mit Aufgabenprüfung |
+| 5 | Stromfluss-Animation, Echtzeit-Simulation, Kennlinien, Lektionen mit Aufgabenprüfung |
 | 6 | Politur, macOS-Bundle |

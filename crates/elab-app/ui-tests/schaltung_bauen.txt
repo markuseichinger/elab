@@ -1,0 +1,50 @@
+# Baut eine LED-Schaltung von Grund auf: platzieren, verdrahten, verschieben,
+# drehen, rückgängig machen und einen Draht löschen.
+# Aufruf: cargo run --release -- --script crates/elab-app/ui-tests/schaltung_bauen.txt
+# Ergebnisse (Screenshots als PPM, Dokument als JSON) landen in ui-out/.
+
+wait 10
+cmd N
+wait 5
+tool Gleichspannung
+click 0 0
+tool Widerstand
+click 6 -4
+tool Leuchtdiode
+move 10 0
+key R
+click 10 0
+tool Masse
+click 0 6
+wait 3
+tool wire
+click 0 -2
+click 0 -4
+click 4 -4
+tool select
+drag 8 -4 10 -2
+drag 10 2 0 6
+wait 5
+dump ui-out/d_built.json
+fit
+wait 5
+move 10.3 0.2
+wait 3
+shot ui-out/s2_built.ppm
+drag 10 0 14 0
+wait 3
+dump ui-out/d_moved.json
+click 6 -4
+key R
+wait 3
+shot ui-out/s3_moved_rot.ppm
+cmd Z
+cmd Z
+wait 3
+dump ui-out/d_undo.json
+click 5 2
+key Delete
+wait 3
+dump ui-out/d_del.json
+shot ui-out/s4_del.ppm
+quit
