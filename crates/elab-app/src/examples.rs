@@ -14,10 +14,7 @@ struct B(Document);
 
 impl B {
     fn new(title: &str) -> Self {
-        B(Document {
-            title: title.into(),
-            ..Default::default()
-        })
+        B(Document { title: title.into(), ..Default::default() })
     }
     fn part(&mut self, kind: K, x: i32, y: i32, rot: u8) -> &mut Self {
         self.0.add_part(kind, P::new(x, y), rot);
@@ -31,8 +28,7 @@ impl B {
     /// Drahtzug durch mehrere Punkte.
     fn wire(&mut self, pts: &[(i32, i32)]) -> &mut Self {
         for w in pts.windows(2) {
-            self.0
-                .add_wire(P::new(w[0].0, w[0].1), P::new(w[1].0, w[1].1));
+            self.0.add_wire(P::new(w[0].0, w[0].1), P::new(w[1].0, w[1].1));
         }
         self
     }
@@ -158,27 +154,12 @@ mod tests {
         for ex in super::all() {
             let nl = netlist::build(&ex.doc);
             assert!(nl.error.is_none(), "{}: {:?}", ex.title, nl.error);
-            assert!(
-                nl.excluded.is_empty(),
-                "{}: nicht verbunden: {:?}",
-                ex.title,
-                nl.excluded
-            );
+            assert!(nl.excluded.is_empty(), "{}: nicht verbunden: {:?}", ex.title, nl.excluded);
             let op = sim::operating_point(&nl).unwrap_or_else(|e| panic!("{}: {e}", ex.title));
-            let has_dc = ex
-                .doc
-                .parts
-                .iter()
-                .any(|p| matches!(p.kind, crate::model::PartKind::DcVoltage { .. }));
+            let has_dc = ex.doc.parts.iter().any(|p| matches!(p.kind, crate::model::PartKind::DcVoltage { .. }));
             assert!(!has_dc || op.max_abs_v() > 0.0, "{}", ex.title);
-            let scope = sim::record(&ex.doc, &nl, ex.scope_t)
-                .unwrap_or_else(|e| panic!("{}: {e}", ex.title));
-            assert_eq!(
-                scope.traces.len(),
-                sim::probes(&ex.doc).len(),
-                "{}",
-                ex.title
-            );
+            let scope = sim::record(&ex.doc, &nl, ex.scope_t).unwrap_or_else(|e| panic!("{}: {e}", ex.title));
+            assert_eq!(scope.traces.len(), sim::probes(&ex.doc).len(), "{}", ex.title);
         }
     }
 

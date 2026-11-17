@@ -23,6 +23,8 @@ pub enum Cmd {
     Click(f32, f32, Modifiers),
     /// Klick an Bildschirmkoordinaten (für Bedienelemente außerhalb der Zeichenfläche)
     ClickPx(f32, f32),
+    /// Ziehen von Bildschirmkoordinaten auf einen Rasterpunkt (z. B. aus der Palette)
+    DragPxGrid(f32, f32, f32, f32),
     /// Text eintippen und mit Enter bestätigen
     Type(String),
     DblClick(f32, f32),
@@ -47,11 +49,7 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
             continue;
         }
         let t: Vec<&str> = line.split_whitespace().collect();
-        let f = |i: usize| -> Result<f32, String> {
-            t.get(i)
-                .and_then(|s| s.parse().ok())
-                .ok_or(format!("Zeile {}: Zahl erwartet", ln + 1))
-        };
+        let f = |i: usize| -> Result<f32, String> { t.get(i).and_then(|s| s.parse().ok()).ok_or(format!("Zeile {}: Zahl erwartet", ln + 1)) };
         let key = |i: usize| -> Result<Key, String> {
             let name = t.get(i).ok_or(format!("Zeile {}: Taste fehlt", ln + 1))?;
             Key::from_name(name).ok_or(format!("Zeile {}: unbekannte Taste {name}", ln + 1))
@@ -65,6 +63,7 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
             "shiftclick" => Cmd::Click(f(1)?, f(2)?, Modifiers::SHIFT),
             "dblclick" => Cmd::DblClick(f(1)?, f(2)?),
             "clickpx" => Cmd::ClickPx(f(1)?, f(2)?),
+            "dragpx" => Cmd::DragPxGrid(f(1)?, f(2)?, f(3)?, f(4)?),
             "type" => Cmd::Type(line.split_once(' ').map_or("", |x| x.1).to_string()),
             "drag" => Cmd::Drag(f(1)?, f(2)?, f(3)?, f(4)?),
             "key" => Cmd::Key(key(1)?, Modifiers::NONE),
@@ -96,30 +95,15 @@ pub struct Runner {
 
 impl Runner {
     pub fn new(cmds: Vec<Cmd>) -> Self {
-        Self {
-            cmds: cmds.into(),
-            frames: VecDeque::new(),
-            wait: 3,
-            shot_pending: None,
-        }
+        Self { cmds: cmds.into(), frames: VecDeque::new(), wait: 3, shot_pending: None }
     }
 
     pub fn busy(&self) -> bool {
-        !self.frames.is_empty()
-            || self.wait > 0
-            || self
-                .shot_pending
-                .as_ref()
-                .is_some_and(|d| !d.load(std::sync::atomic::Ordering::SeqCst))
+        !self.frames.is_empty() || self.wait > 0 || self.shot_pending.as_ref().is_some_and(|d| !d.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     fn btn(p: Pos2, pressed: bool, m: Modifiers) -> Event {
-        Event::PointerButton {
-            pos: p,
-            button: PointerButton::Primary,
-            pressed,
-            modifiers: m,
-        }
+        Event::PointerButton { pos: p, button: PointerButton::Primary, pressed, modifiers: m }
     }
 
     pub fn click(&mut self, p: Pos2, m: Modifiers) {
@@ -131,27 +115,18 @@ impl Runner {
 
     pub fn dblclick(&mut self, p: Pos2) {
         self.frames.push_back(vec![Event::PointerMoved(p)]);
-        self.frames.push_back(vec![
-            Self::btn(p, true, Modifiers::NONE),
-            Self::btn(p, false, Modifiers::NONE),
-        ]);
-        self.frames.push_back(vec![
-            Self::btn(p, true, Modifiers::NONE),
-            Self::btn(p, false, Modifiers::NONE),
-        ]);
+        self.frames.push_back(vec![Self::btn(p, true, Modifiers::NONE), Self::btn(p, false, Modifiers::NONE)]);
+        self.frames.push_back(vec![Self::btn(p, true, Modifiers::NONE), Self::btn(p, false, Modifiers::NONE)]);
         self.frames.push_back(vec![]);
     }
 
     pub fn drag(&mut self, a: Pos2, b: Pos2) {
         self.frames.push_back(vec![Event::PointerMoved(a)]);
-        self.frames
-            .push_back(vec![Self::btn(a, true, Modifiers::NONE)]);
+        self.frames.push_back(vec![Self::btn(a, true, Modifiers::NONE)]);
         for k in 1..=10 {
-            self.frames
-                .push_back(vec![Event::PointerMoved(a + (b - a) * (k as f32 / 10.0))]);
+            self.frames.push_back(vec![Event::PointerMoved(a + (b - a) * (k as f32 / 10.0))]);
         }
-        self.frames
-            .push_back(vec![Self::btn(b, false, Modifiers::NONE)]);
+        self.frames.push_back(vec![Self::btn(b, false, Modifiers::NONE)]);
         self.frames.push_back(vec![]);
     }
 
@@ -161,13 +136,7 @@ impl Runner {
     }
 
     pub fn key(&mut self, key: Key, m: Modifiers) {
-        let ev = |pressed| Event::Key {
-            key,
-            physical_key: None,
-            pressed,
-            repeat: false,
-            modifiers: m,
-        };
+        let ev = |pressed| Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: m };
         self.frames.push_back(vec![ev(true)]);
         self.frames.push_back(vec![ev(false)]);
         self.frames.push_back(vec![]);

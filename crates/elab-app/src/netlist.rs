@@ -31,6 +31,8 @@ pub struct Netlist {
     pub simulated: HashMap<u32, String>,
     /// Bauteile ohne Verbindung zur Masse.
     pub excluded: Vec<u32>,
+    /// Zweipole, deren beide Anschlüsse am selben Netz hängen (überbrückt, stromlos).
+    pub bridged: Vec<u32>,
     pub error: Option<String>,
 }
 
@@ -98,21 +100,13 @@ pub fn build(doc: &Document) -> Netlist {
     let gnd_root = dsu.find(gnd_slot);
     if has_gnd {
         root_net.insert(gnd_root, 0);
-        nets.push(NetInfo {
-            name: "gnd".into(),
-            is_gnd: true,
-            reachable: true,
-        });
+        nets.push(NetInfo { name: "gnd".into(), is_gnd: true, reachable: true });
     }
     let mut net_of: HashMap<P, usize> = HashMap::new();
     for (k, p) in pts.iter().enumerate() {
         let r = dsu.find(k);
         let n = *root_net.entry(r).or_insert_with(|| {
-            nets.push(NetInfo {
-                name: String::new(),
-                is_gnd: false,
-                reachable: false,
-            });
+            nets.push(NetInfo { name: String::new(), is_gnd: false, reachable: false });
             nets.len() - 1
         });
         net_of.insert(*p, n);
@@ -137,11 +131,7 @@ pub fn build(doc: &Document) -> Netlist {
         k += 1;
     }
 
-    let pin_nets: HashMap<u32, Vec<usize>> = doc
-        .parts
-        .iter()
-        .map(|p| (p.id, p.pins().iter().map(|q| net_of[q]).collect()))
-        .collect();
+    let pin_nets: HashMap<u32, Vec<usize>> = doc.parts.iter().map(|p| (p.id, p.pins().iter().map(|q| net_of[q]).collect())).collect();
     let wire_net: HashMap<u32, usize> = doc.wires.iter().map(|w| (w.id, net_of[&w.a])).collect();
 
     // 4. Erreichbarkeit ab Masse über Bauteile mit zwei Anschlüssen
@@ -174,19 +164,22 @@ pub fn build(doc: &Document) -> Netlist {
         pin_nets,
         simulated: HashMap::new(),
         excluded: Vec::new(),
+        bridged: Vec::new(),
         error: None,
     };
-    let electrical: Vec<_> = doc
-        .parts
-        .iter()
-        .filter(|p| !matches!(p.kind, PartKind::Ground | PartKind::Probe))
-        .collect();
+    let electrical: Vec<_> = doc.parts.iter().filter(|p| !matches!(p.kind, PartKind::Ground | PartKind::Probe)).collect();
     if !has_gnd {
         if !electrical.is_empty() {
             nl.error = Some("Es fehlt die Masse (⏚). Ohne Bezugspunkt gibt es keine Spannungen, setze ein Masse-Symbol an den Minuspol.".into());
         }
         nl.excluded = electrical.iter().map(|p| p.id).collect();
         return nl;
+    }
+    for part in &electrical {
+        let pn = &nl.pin_nets[&part.id];
+        if pn.len() == 2 && pn[0] == pn[1] && part.kind.shape() == crate::model::Shape::TwoPole {
+            nl.bridged.push(part.id);
+        }
     }
     for part in electrical {
         let pn = nl.pin_nets[&part.id].clone();
@@ -198,66 +191,20 @@ pub fn build(doc: &Document) -> Netlist {
         let b = nl.circuit.node(&nl.nets[pn[1]].name);
         let kind = match &part.kind {
             PartKind::Resistor { r } => ElementKind::Resistor { a, b, r: *r },
-            PartKind::Lamp { v_nom, p_nom } => ElementKind::Resistor {
-                a,
-                b,
-                r: v_nom * v_nom / p_nom,
-            },
-            PartKind::Capacitor { c } => ElementKind::Capacitor {
-                a,
-                b,
-                c: *c,
-                ic: None,
-            },
-            PartKind::Inductor { l } => ElementKind::Inductor {
-                a,
-                b,
-                l: *l,
-                ic: None,
-            },
-            PartKind::DcVoltage { v } => ElementKind::VSource {
-                p: a,
-                n: b,
-                wave: Waveform::Dc(*v),
-            },
+            PartKind::Lamp { v_nom, p_nom } => ElementKind::Resistor { a, b, r: v_nom * v_nom / p_nom },
+            PartKind::Capacitor { c } => ElementKind::Capacitor { a, b, c: *c, ic: None },
+            PartKind::Inductor { l } => ElementKind::Inductor { a, b, l: *l, ic: None },
+            PartKind::DcVoltage { v } => ElementKind::VSource { p: a, n: b, wave: Waveform::Dc(*v) },
             PartKind::AcVoltage { amp, freq, offset } => ElementKind::VSource {
                 p: a,
                 n: b,
-                wave: Waveform::Sine {
-                    offset: *offset,
-                    amplitude: *amp,
-                    freq: *freq,
-                    phase_deg: 0.0,
-                    delay: 0.0,
-                },
+                wave: Waveform::Sine { offset: *offset, amplitude: *amp, freq: *freq, phase_deg: 0.0, delay: 0.0 },
             },
-            PartKind::SquareVoltage { low, high, freq } => ElementKind::VSource {
-                p: a,
-                n: b,
-                wave: Waveform::square(*low, *high, *freq),
-            },
-            PartKind::CurrentSource { i } => ElementKind::ISource {
-                p: a,
-                n: b,
-                wave: Waveform::Dc(*i),
-            },
-            PartKind::Diode { kind } => ElementKind::Diode {
-                a,
-                k: b,
-                model: kind.model(),
-            },
-            PartKind::Led { color } => ElementKind::Diode {
-                a,
-                k: b,
-                model: color.model(),
-            },
-            PartKind::Switch { closed } => ElementKind::Switch {
-                a,
-                b,
-                closed: *closed,
-                r_on: 1e-3,
-                r_off: 1e15,
-            },
+            PartKind::SquareVoltage { low, high, freq } => ElementKind::VSource { p: a, n: b, wave: Waveform::square(*low, *high, *freq) },
+            PartKind::CurrentSource { i } => ElementKind::ISource { p: a, n: b, wave: Waveform::Dc(*i) },
+            PartKind::Diode { kind } => ElementKind::Diode { a, k: b, model: kind.model() },
+            PartKind::Led { color } => ElementKind::Diode { a, k: b, model: color.model() },
+            PartKind::Switch { closed } => ElementKind::Switch { a, b, closed: *closed, r_on: 1e-3, r_off: 1e15 },
             PartKind::Ground | PartKind::Probe => unreachable!(),
         };
         match nl.circuit.add(&part.name, kind) {
@@ -269,9 +216,7 @@ pub fn build(doc: &Document) -> Netlist {
                     SimError::InvalidValue { element, msg } if msg.contains("kurzgeschlossen") => {
                         format!("{element} ist kurzgeschlossen: Beide Anschlüsse hängen am selben Netz.")
                     }
-                    SimError::DuplicateName(n) => format!(
-                        "Der Name „{n}“ ist doppelt vergeben. Benenne eines der Bauteile um."
-                    ),
+                    SimError::DuplicateName(n) => format!("Der Name „{n}“ ist doppelt vergeben. Benenne eines der Bauteile um."),
                     other => other.to_string(),
                 };
                 nl.error.get_or_insert(msg);
@@ -309,10 +254,7 @@ mod tests {
         assert!(nl.error.is_none(), "{:?}", nl.error);
         assert_eq!(nl.nets.len(), 3);
         assert!(nl.excluded.is_empty());
-        let op = elab_sim::Simulator::new(&nl.circuit)
-            .unwrap()
-            .operating_point()
-            .unwrap();
+        let op = elab_sim::Simulator::new(&nl.circuit).unwrap().operating_point().unwrap();
         let out = &nl.nets[nl.net_of[&P::new(8, -2)]].name;
         assert!((op.voltage(out).unwrap() - 6.0).abs() < 1e-6);
     }
@@ -363,6 +305,18 @@ mod tests {
     }
 
     #[test]
+    fn bridged_resistor_is_detected() {
+        let mut d = divider();
+        // Draht parallel zu R2 (8,-2)…(8,2) außen herum: R2 ist überbrückt
+        d.add_wire(P::new(8, -2), P::new(10, -2));
+        d.add_wire(P::new(10, -2), P::new(10, 2));
+        d.add_wire(P::new(10, 2), P::new(8, 2));
+        let nl = build(&d);
+        let r2 = d.part_by_name("R2").unwrap().id;
+        assert_eq!(nl.bridged, vec![r2]);
+    }
+
+    #[test]
     fn shorted_source_gives_clear_error() {
         let mut d = Document::default();
         d.add_part(K::DcVoltage { v: 5.0 }, P::new(0, 0), 0);
@@ -371,10 +325,6 @@ mod tests {
         d.add_wire(P::new(3, -2), P::new(3, 2));
         d.add_wire(P::new(3, 2), P::new(0, 2));
         let nl = build(&d);
-        assert!(
-            nl.error.as_deref().unwrap().contains("kurzgeschlossen"),
-            "{:?}",
-            nl.error
-        );
+        assert!(nl.error.as_deref().unwrap().contains("kurzgeschlossen"), "{:?}", nl.error);
     }
 }

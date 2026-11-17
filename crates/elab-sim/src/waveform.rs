@@ -8,24 +8,10 @@ pub enum Waveform {
     /// Konstanter Wert.
     Dc(f64),
     /// `offset + amplitude * sin(2π f (t - delay) + phase)`, vor `delay` nur `offset + amplitude * sin(phase)`.
-    Sine {
-        offset: f64,
-        amplitude: f64,
-        freq: f64,
-        phase_deg: f64,
-        delay: f64,
-    },
+    Sine { offset: f64, amplitude: f64, freq: f64, phase_deg: f64, delay: f64 },
     /// Trapezförmiger Puls wie in SPICE: Ruhewert `v1`, Pulswert `v2`.
     /// `period = 0` bedeutet ein einzelner Puls.
-    Pulse {
-        v1: f64,
-        v2: f64,
-        delay: f64,
-        rise: f64,
-        fall: f64,
-        width: f64,
-        period: f64,
-    },
+    Pulse { v1: f64, v2: f64, delay: f64, rise: f64, fall: f64, width: f64, period: f64 },
     /// Stückweise linear, Stützstellen `(t, wert)` aufsteigend nach `t`.
     Pwl(Vec<(f64, f64)>),
 }
@@ -36,67 +22,31 @@ const MIN_EDGE: f64 = 1e-9;
 impl Waveform {
     /// Spannungssprung von 0 auf `v` zum Zeitpunkt `at` (Flanke 1 ns).
     pub fn step(v: f64, at: f64) -> Self {
-        Waveform::Pulse {
-            v1: 0.0,
-            v2: v,
-            delay: at,
-            rise: MIN_EDGE,
-            fall: MIN_EDGE,
-            width: f64::INFINITY,
-            period: 0.0,
-        }
+        Waveform::Pulse { v1: 0.0, v2: v, delay: at, rise: MIN_EDGE, fall: MIN_EDGE, width: f64::INFINITY, period: 0.0 }
     }
 
     /// Sinus ohne Offset und Phase.
     pub fn sine(amplitude: f64, freq: f64) -> Self {
-        Waveform::Sine {
-            offset: 0.0,
-            amplitude,
-            freq,
-            phase_deg: 0.0,
-            delay: 0.0,
-        }
+        Waveform::Sine { offset: 0.0, amplitude, freq, phase_deg: 0.0, delay: 0.0 }
     }
 
     /// Rechteck zwischen `low` und `high` mit Tastgrad 50 %.
     pub fn square(low: f64, high: f64, freq: f64) -> Self {
         let period = 1.0 / freq;
         let edge = (period * 1e-4).max(MIN_EDGE);
-        Waveform::Pulse {
-            v1: low,
-            v2: high,
-            delay: 0.0,
-            rise: edge,
-            fall: edge,
-            width: period / 2.0 - edge,
-            period,
-        }
+        Waveform::Pulse { v1: low, v2: high, delay: 0.0, rise: edge, fall: edge, width: period / 2.0 - edge, period }
     }
 
     /// Wert zum Zeitpunkt `t`.
     pub fn value(&self, t: f64) -> f64 {
         match self {
             Waveform::Dc(v) => *v,
-            Waveform::Sine {
-                offset,
-                amplitude,
-                freq,
-                phase_deg,
-                delay,
-            } => {
+            Waveform::Sine { offset, amplitude, freq, phase_deg, delay } => {
                 let ph = phase_deg.to_radians();
                 let tt = (t - delay).max(0.0);
                 offset + amplitude * (2.0 * PI * freq * tt + ph).sin()
             }
-            Waveform::Pulse {
-                v1,
-                v2,
-                delay,
-                rise,
-                fall,
-                width,
-                period,
-            } => {
+            Waveform::Pulse { v1, v2, delay, rise, fall, width, period } => {
                 let rise = rise.max(MIN_EDGE);
                 let fall = fall.max(MIN_EDGE);
                 if t < *delay {
@@ -148,14 +98,7 @@ impl Waveform {
                     out.push(*delay);
                 }
             }
-            Waveform::Pulse {
-                delay,
-                rise,
-                fall,
-                width,
-                period,
-                ..
-            } => {
+            Waveform::Pulse { delay, rise, fall, width, period, .. } => {
                 let rise = rise.max(MIN_EDGE);
                 let fall = fall.max(MIN_EDGE);
                 let corners = [0.0, rise, rise + width, rise + width + fall];
@@ -200,15 +143,7 @@ mod tests {
 
     #[test]
     fn pulse_shape() {
-        let w = Waveform::Pulse {
-            v1: 0.0,
-            v2: 5.0,
-            delay: 1.0,
-            rise: 0.1,
-            fall: 0.1,
-            width: 1.0,
-            period: 0.0,
-        };
+        let w = Waveform::Pulse { v1: 0.0, v2: 5.0, delay: 1.0, rise: 0.1, fall: 0.1, width: 1.0, period: 0.0 };
         assert_eq!(w.value(0.5), 0.0);
         assert!((w.value(1.05) - 2.5).abs() < 1e-12);
         assert_eq!(w.value(1.5), 5.0);

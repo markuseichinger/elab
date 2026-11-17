@@ -118,28 +118,10 @@ fn schalter_offen_und_geschlossen() {
     c.resistor("R1", "out", "gnd", 1e3).unwrap();
     assert!(op(&c).voltage("out").unwrap().abs() < 1e-6);
     let s = c.elements()[c.find_element("S1").unwrap()].kind.clone();
-    if let ElementKind::Switch {
-        a, b, r_on, r_off, ..
-    } = s
-    {
-        c.update(
-            "S1",
-            ElementKind::Switch {
-                a,
-                b,
-                closed: true,
-                r_on,
-                r_off,
-            },
-        )
-        .unwrap();
+    if let ElementKind::Switch { a, b, r_on, r_off, .. } = s {
+        c.update("S1", ElementKind::Switch { a, b, closed: true, r_on, r_off }).unwrap();
     }
-    assert_close(
-        op(&c).voltage("out").unwrap(),
-        5.0,
-        1e-5,
-        "U_out geschlossen",
-    );
+    assert_close(op(&c).voltage("out").unwrap(), 5.0, 1e-5, "U_out geschlossen");
 }
 
 // ---------------------------------------------------------------------------
@@ -153,9 +135,7 @@ fn diode_in_durchlassrichtung() {
     c.vsource("V1", "in", "gnd", 5.0).unwrap();
     c.resistor("R1", "in", "a", 1e3).unwrap();
     c.diode("D1", "a", "gnd", m).unwrap();
-    let vd = bisect(0.0, 1.0, |v| {
-        (5.0 - v) / 1e3 - m.is * ((v / m.nvt()).exp() - 1.0)
-    });
+    let vd = bisect(0.0, 1.0, |v| (5.0 - v) / 1e3 - m.is * ((v / m.nvt()).exp() - 1.0));
     let r = op(&c);
     assert_close(r.voltage("a").unwrap(), vd, 1e-6, "U_D");
     assert_close(r.current("D1").unwrap(), (5.0 - vd) / 1e3, 1e-8, "I_D");
@@ -194,9 +174,7 @@ fn harter_fall_diode_fast_direkt_an_quelle() {
     c.vsource("V1", "in", "gnd", 20.0).unwrap();
     c.resistor("R1", "in", "a", 1.0).unwrap();
     c.diode("D1", "a", "gnd", m).unwrap();
-    let vd = bisect(0.0, 2.0, |v| {
-        (20.0 - v) / 1.0 - m.is * ((v / m.nvt()).exp() - 1.0)
-    });
+    let vd = bisect(0.0, 2.0, |v| (20.0 - v) / 1.0 - m.is * ((v / m.nvt()).exp() - 1.0));
     assert_close(op(&c).voltage("a").unwrap(), vd, 1e-5, "U_D");
 }
 
@@ -229,8 +207,7 @@ fn rc_ladekurve() {
     let (r, cap, u0) = (1e3, 1e-6, 5.0);
     let tau = r * cap;
     let mut c = Circuit::new();
-    c.vsource("V1", "in", "gnd", Waveform::step(u0, 0.0))
-        .unwrap();
+    c.vsource("V1", "in", "gnd", Waveform::step(u0, 0.0)).unwrap();
     c.resistor("R1", "in", "out", r).unwrap();
     c.capacitor("C1", "out", "gnd", cap).unwrap();
     let res = tran(&c, TranOptions::new(5.0 * tau, tau / 50.0));
@@ -242,12 +219,7 @@ fn rc_ladekurve() {
     }
     assert!(worst < 1e-3 * u0, "maximale Abweichung {worst:.3e} V");
     // Nach einer Zeitkonstante: 63,2 %
-    assert_close(
-        res.voltage_at("out", tau).unwrap(),
-        u0 * (1.0 - (-1.0f64).exp()),
-        5e-3,
-        "U(τ)",
-    );
+    assert_close(res.voltage_at("out", tau).unwrap(), u0 * (1.0 - (-1.0f64).exp()), 5e-3, "U(τ)");
     // Ladestrom zu Beginn ≈ U0/R, Kondensatorstrom = Widerstandsstrom
     let ic = res.current_at("C1", 0.5 * tau).unwrap();
     let ir = res.current_at("R1", 0.5 * tau).unwrap();
@@ -259,8 +231,7 @@ fn rc_genauigkeit_bei_grobem_hmax() {
     // h_max = τ: Die Fehlersteuerung muss die Schritte selbst klein genug halten.
     let tau = 1e-3;
     let mut c = Circuit::new();
-    c.vsource("V1", "in", "gnd", Waveform::step(1.0, 0.0))
-        .unwrap();
+    c.vsource("V1", "in", "gnd", Waveform::step(1.0, 0.0)).unwrap();
     c.resistor("R1", "in", "out", 1e3).unwrap();
     c.capacitor("C1", "out", "gnd", 1e-6).unwrap();
     let mut sim = Simulator::new(&c).unwrap();
@@ -268,11 +239,7 @@ fn rc_genauigkeit_bei_grobem_hmax() {
     let v = res.voltage("out").unwrap();
     for (k, &t) in res.time.iter().enumerate() {
         let exact = 1.0 - (-(t - 1e-9).max(0.0) / tau).exp();
-        assert!(
-            (v[k] - exact).abs() < 2e-3,
-            "t = {t:.3e}: {} statt {exact}",
-            v[k]
-        );
+        assert!((v[k] - exact).abs() < 2e-3, "t = {t:.3e}: {} statt {exact}", v[k]);
     }
 }
 
@@ -281,19 +248,14 @@ fn rl_einschaltvorgang() {
     let (r, l, u0) = (100.0, 0.1, 10.0);
     let tau = l / r;
     let mut c = Circuit::new();
-    c.vsource("V1", "in", "gnd", Waveform::step(u0, 0.0))
-        .unwrap();
+    c.vsource("V1", "in", "gnd", Waveform::step(u0, 0.0)).unwrap();
     c.resistor("R1", "in", "m", r).unwrap();
     c.inductor("L1", "m", "gnd", l).unwrap();
     let res = tran(&c, TranOptions::new(5.0 * tau, tau / 50.0));
     let i = res.current("L1").unwrap();
     for (k, &t) in res.time.iter().enumerate() {
         let exact = u0 / r * (1.0 - (-(t - 1e-9).max(0.0) / tau).exp());
-        assert!(
-            (i[k] - exact).abs() < 1e-3 * u0 / r,
-            "t = {t:.3e}: {} statt {exact}",
-            i[k]
-        );
+        assert!((i[k] - exact).abs() < 1e-3 * u0 / r, "t = {t:.3e}: {} statt {exact}", i[k]);
     }
 }
 
@@ -304,30 +266,9 @@ fn lc_schwingkreis_frequenz_und_energie() {
     let period = 1.0 / f0;
     let mut c = Circuit::new();
     let n = c.node("n");
-    c.add(
-        "C1",
-        ElementKind::Capacitor {
-            a: n,
-            b: GND,
-            c: cap,
-            ic: Some(1.0),
-        },
-    )
-    .unwrap();
-    c.add(
-        "L1",
-        ElementKind::Inductor {
-            a: n,
-            b: GND,
-            l,
-            ic: Some(0.0),
-        },
-    )
-    .unwrap();
-    let res = tran(
-        &c,
-        TranOptions::new(10.0 * period, period / 100.0).with_ic(),
-    );
+    c.add("C1", ElementKind::Capacitor { a: n, b: GND, c: cap, ic: Some(1.0) }).unwrap();
+    c.add("L1", ElementKind::Inductor { a: n, b: GND, l, ic: Some(0.0) }).unwrap();
+    let res = tran(&c, TranOptions::new(10.0 * period, period / 100.0).with_ic());
     let v = res.voltage("n").unwrap();
     let t = &res.time;
 
@@ -338,26 +279,14 @@ fn lc_schwingkreis_frequenz_und_energie() {
             crossings.push(t[k - 1] + (t[k] - t[k - 1]) * v[k - 1] / (v[k - 1] - v[k]));
         }
     }
-    assert!(
-        crossings.len() >= 9,
-        "zu wenige Schwingungen: {}",
-        crossings.len()
-    );
+    assert!(crossings.len() >= 9, "zu wenige Schwingungen: {}", crossings.len());
     let measured = (crossings[crossings.len() - 1] - crossings[0]) / (crossings.len() - 1) as f64;
     assert_close(measured, period, 2e-3 * period, "Periodendauer");
 
     // Trapezregel ist energieerhaltend: Amplitude bleibt nahezu konstant.
-    let last_period: Vec<f64> = t
-        .iter()
-        .zip(&v)
-        .filter(|(tt, _)| **tt > 9.0 * period)
-        .map(|(_, vv)| vv.abs())
-        .collect();
+    let last_period: Vec<f64> = t.iter().zip(&v).filter(|(tt, _)| **tt > 9.0 * period).map(|(_, vv)| vv.abs()).collect();
     let amp = last_period.iter().cloned().fold(0.0, f64::max);
-    assert!(
-        amp > 0.98 && amp < 1.01,
-        "Amplitude nach 10 Perioden: {amp}"
-    );
+    assert!(amp > 0.98 && amp < 1.01, "Amplitude nach 10 Perioden: {amp}");
 }
 
 #[test]
@@ -367,8 +296,7 @@ fn rlc_sprungantwort_unterdaempft() {
     let w0 = 1.0 / (l * cap).sqrt();
     let wd = (w0 * w0 - alpha * alpha).sqrt();
     let mut c = Circuit::new();
-    c.vsource("V1", "in", "gnd", Waveform::step(u0, 0.0))
-        .unwrap();
+    c.vsource("V1", "in", "gnd", Waveform::step(u0, 0.0)).unwrap();
     c.resistor("R1", "in", "a", r).unwrap();
     c.inductor("L1", "a", "b", l).unwrap();
     c.capacitor("C1", "b", "gnd", cap).unwrap();
@@ -377,8 +305,7 @@ fn rlc_sprungantwort_unterdaempft() {
     let mut worst: f64 = 0.0;
     for (k, &t) in res.time.iter().enumerate() {
         let tt = (t - 1e-9).max(0.0);
-        let exact =
-            u0 * (1.0 - (-alpha * tt).exp() * ((wd * tt).cos() + alpha / wd * (wd * tt).sin()));
+        let exact = u0 * (1.0 - (-alpha * tt).exp() * ((wd * tt).cos() + alpha / wd * (wd * tt).sin()));
         worst = worst.max((v[k] - exact).abs());
     }
     assert!(worst < 5e-3 * u0, "maximale Abweichung {worst:.3e} V");
@@ -393,26 +320,17 @@ fn rechteck_auf_rc_trifft_knickstellen() {
     // 1 kHz Rechteck 0/5 V auf RC mit τ = 0,1 ms.
     let tau = 1e-4;
     let mut c = Circuit::new();
-    c.vsource("V1", "in", "gnd", Waveform::square(0.0, 5.0, 1e3))
-        .unwrap();
+    c.vsource("V1", "in", "gnd", Waveform::square(0.0, 5.0, 1e3)).unwrap();
     c.resistor("R1", "in", "out", 1e3).unwrap();
     c.capacitor("C1", "out", "gnd", 1e-7).unwrap();
     let res = tran(&c, TranOptions::new(3e-3, 2e-5));
     // Die Flanken des Rechtecks sind exakt als Zeitpunkte enthalten
     for edge in [0.5e-3, 1.0e-3, 1.5e-3, 2.0e-3] {
-        assert!(
-            res.time.iter().any(|t| (t - edge).abs() < 1e-9),
-            "Flanke bei {edge} fehlt"
-        );
+        assert!(res.time.iter().any(|t| (t - edge).abs() < 1e-9), "Flanke bei {edge} fehlt");
     }
     // Am Ende der High-Phase: 5 V · (1 − e^(−5))
     let v = res.voltage_at("out", 0.5e-3 - 1e-7).unwrap();
-    assert_close(
-        v,
-        5.0 * (1.0 - (-5.0f64).exp()),
-        0.02,
-        "U_out vor fallender Flanke",
-    );
+    assert_close(v, 5.0 * (1.0 - (-5.0f64).exp()), 0.02, "U_out vor fallender Flanke");
     // Am Ende der Low-Phase ist der Kondensator fast leer
     let v = res.voltage_at("out", 1.0e-3 - 1e-7).unwrap();
     assert!(v < 0.05, "U_out vor steigender Flanke = {v}");
@@ -422,8 +340,7 @@ fn rechteck_auf_rc_trifft_knickstellen() {
 #[test]
 fn einweggleichrichter_mit_glaettung() {
     let mut c = Circuit::new();
-    c.vsource("V1", "ac", "gnd", Waveform::sine(10.0, 50.0))
-        .unwrap();
+    c.vsource("V1", "ac", "gnd", Waveform::sine(10.0, 50.0)).unwrap();
     c.diode("D1", "ac", "out", DiodeModel::SI_1N4007).unwrap();
     c.capacitor("C1", "out", "gnd", 470e-6).unwrap();
     c.resistor("RL", "out", "gnd", 1e3).unwrap();
@@ -433,15 +350,8 @@ fn einweggleichrichter_mit_glaettung() {
     let peak = v.iter().cloned().fold(f64::MIN, f64::max);
     assert!(peak > 9.0 && peak < 9.6, "Spitzenspannung {peak}");
     // Brummspannung nach dem Einschwingen ≈ I/(f·C) ≈ 0,4 V
-    let settled: Vec<f64> = res
-        .time
-        .iter()
-        .zip(&v)
-        .filter(|(t, _)| **t > 0.06)
-        .map(|(_, x)| *x)
-        .collect();
-    let ripple = settled.iter().cloned().fold(f64::MIN, f64::max)
-        - settled.iter().cloned().fold(f64::MAX, f64::min);
+    let settled: Vec<f64> = res.time.iter().zip(&v).filter(|(t, _)| **t > 0.06).map(|(_, x)| *x).collect();
+    let ripple = settled.iter().cloned().fold(f64::MIN, f64::max) - settled.iter().cloned().fold(f64::MAX, f64::min);
     assert!(ripple > 0.25 && ripple < 0.5, "Brummspannung {ripple}");
     // Die Diode sperrt: kein nennenswerter Rückstrom
     assert!(id.iter().cloned().fold(f64::MAX, f64::min) > -1e-6);
@@ -451,8 +361,7 @@ fn einweggleichrichter_mit_glaettung() {
 fn brueckengleichrichter_230v() {
     let m = DiodeModel::SI_1N4007;
     let mut c = Circuit::new();
-    c.vsource("V1", "ac1", "ac2", Waveform::sine(325.0, 50.0))
-        .unwrap();
+    c.vsource("V1", "ac1", "ac2", Waveform::sine(325.0, 50.0)).unwrap();
     c.diode("D1", "ac1", "plus", m).unwrap();
     c.diode("D2", "ac2", "plus", m).unwrap();
     c.diode("D3", "gnd", "ac1", m).unwrap();
@@ -495,27 +404,17 @@ fn fehler_schwebender_knoten() {
 #[test]
 fn fehler_ungueltige_werte() {
     let mut c = Circuit::new();
-    assert!(matches!(
-        c.resistor("R1", "a", "gnd", 0.0),
-        Err(SimError::InvalidValue { .. })
-    ));
-    assert!(matches!(
-        c.capacitor("C1", "a", "gnd", -1e-6),
-        Err(SimError::InvalidValue { .. })
-    ));
+    assert!(matches!(c.resistor("R1", "a", "gnd", 0.0), Err(SimError::InvalidValue { .. })));
+    assert!(matches!(c.capacitor("C1", "a", "gnd", -1e-6), Err(SimError::InvalidValue { .. })));
     c.resistor("R2", "a", "gnd", 1.0).unwrap();
-    assert!(matches!(
-        c.resistor("R2", "a", "gnd", 1.0),
-        Err(SimError::DuplicateName(_))
-    ));
+    assert!(matches!(c.resistor("R2", "a", "gnd", 1.0), Err(SimError::DuplicateName(_))));
 }
 
 #[test]
 fn kondensator_nur_ueber_c_angebunden() {
     // Knoten "m" hängt nur an Kondensatoren: im DC-Fall unbestimmt, darf aber nicht abstürzen.
     let mut c = Circuit::new();
-    c.vsource("V1", "in", "gnd", Waveform::step(10.0, 0.0))
-        .unwrap();
+    c.vsource("V1", "in", "gnd", Waveform::step(10.0, 0.0)).unwrap();
     c.capacitor("C1", "in", "m", 1e-6).unwrap();
     c.capacitor("C2", "m", "gnd", 1e-6).unwrap();
     let res = tran(&c, TranOptions::new(1e-3, 1e-5));

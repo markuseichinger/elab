@@ -29,10 +29,7 @@ pub struct OpView {
 
 impl OpView {
     pub fn max_abs_v(&self) -> f64 {
-        self.net_v
-            .iter()
-            .flatten()
-            .fold(0.0_f64, |m, v| m.max(v.abs()))
+        self.net_v.iter().flatten().fold(0.0_f64, |m, v| m.max(v.abs()))
     }
 }
 
@@ -66,12 +63,7 @@ pub fn operating_point(nl: &Netlist) -> Result<OpView, String> {
             (id, PartValues { u, i, p: u * i })
         })
         .collect();
-    Ok(OpView {
-        net_v,
-        parts,
-        millis: t0.elapsed().as_secs_f64() * 1e3,
-        newton: sim.stats.newton_iterations,
-    })
+    Ok(OpView { net_v, parts, millis: t0.elapsed().as_secs_f64() * 1e3, newton: sim.stats.newton_iterations })
 }
 
 /// Eine Kurve im Oszilloskop.
@@ -94,12 +86,7 @@ pub struct ScopeData {
 
 /// Messpunkte in Dokumentreihenfolge: (Teile-ID, Name, Farbindex).
 pub fn probes(doc: &Document) -> Vec<(u32, String, usize)> {
-    doc.parts
-        .iter()
-        .filter(|p| matches!(p.kind, PartKind::Probe))
-        .enumerate()
-        .map(|(k, p)| (p.id, p.name.clone(), k))
-        .collect()
+    doc.parts.iter().filter(|p| matches!(p.kind, PartKind::Probe)).enumerate().map(|(k, p)| (p.id, p.name.clone(), k)).collect()
 }
 
 /// Simuliert den Zeitverlauf und liefert die Spannung an jedem Messpunkt.
@@ -109,9 +96,7 @@ pub fn record(doc: &Document, nl: &Netlist, t_stop: f64) -> Result<ScopeData, St
     }
     let t0 = Instant::now();
     let mut sim = Simulator::new(&nl.circuit).map_err(|e| e.to_string())?;
-    let res = sim
-        .transient(&TranOptions::new(t_stop, t_stop / 1000.0))
-        .map_err(|e| e.to_string())?;
+    let res = sim.transient(&TranOptions::new(t_stop, t_stop / 1000.0)).map_err(|e| e.to_string())?;
     let mut traces = Vec::new();
     for (id, name, color_idx) in probes(doc) {
         let net = nl.pin_nets[&id][0];
@@ -126,30 +111,16 @@ pub fn record(doc: &Document, nl: &Netlist, t_stop: f64) -> Result<ScopeData, St
         } else {
             continue;
         };
-        traces.push(Trace {
-            name,
-            color_idx,
-            pts: res.time.iter().zip(v).map(|(&t, v)| [t, v]).collect(),
-        });
+        traces.push(Trace { name, color_idx, pts: res.time.iter().zip(v).map(|(&t, v)| [t, v]).collect() });
     }
-    Ok(ScopeData {
-        traces,
-        t_stop,
-        millis: t0.elapsed().as_secs_f64() * 1e3,
-        steps: sim.stats.accepted_steps,
-    })
+    Ok(ScopeData { traces, t_stop, millis: t0.elapsed().as_secs_f64() * 1e3, steps: sim.stats.accepted_steps })
 }
 
 /// Liest einen Wert mit SI-Präfix: „4k7“, „4,7 k“, „100n“, „10µF“, „1M“, „2.2 mA“.
 ///
 /// Groß-M ist Mega, klein-m ist Milli. Eine angehängte Einheit wird ignoriert.
 pub fn parse_si(s: &str) -> Option<f64> {
-    let s: String = s
-        .trim()
-        .replace(',', ".")
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
+    let s: String = s.trim().replace(',', ".").chars().filter(|c| !c.is_whitespace()).collect();
     if s.is_empty() {
         return None;
     }
@@ -171,12 +142,7 @@ pub fn parse_si(s: &str) -> Option<f64> {
     // Zahlanteil (inkl. Exponent) abtrennen
     let chars: Vec<char> = s.chars().collect();
     let mut end = 0;
-    while end < chars.len()
-        && (chars[end].is_ascii_digit()
-            || chars[end] == '.'
-            || chars[end] == '-'
-            || chars[end] == '+')
-    {
+    while end < chars.len() && (chars[end].is_ascii_digit() || chars[end] == '.' || chars[end] == '-' || chars[end] == '+') {
         end += 1;
     }
     if end < chars.len() && (chars[end] == 'e' || chars[end] == 'E') {

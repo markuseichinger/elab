@@ -1,0 +1,51 @@
+# Bauteile in bestehende Leitungen einfügen (per Klick und per Drag & Drop
+# aus der Palette), Leitung verlängern, Schalter umlegen.
+# Aufruf: cargo run --release -- --script crates/elab-app/ui-tests/einfuegen.txt
+
+wait 10
+cmd N
+wait 5
+tool Gleichspannung
+click 0 0
+tool Masse
+click 10 6
+# Stromkreis als geschlossene Leitung
+tool wire
+click 0 -2
+click 0 -6
+click 20 -6
+click 20 6
+click 0 6
+click 0 2
+tool select
+wait 3
+# Bauteile auf die obere Leitung setzen: werden eingefügt
+tool Widerstand
+click 5 -6
+tool Leuchtdiode
+click 11 -6
+tool Glühlampe
+move 16 -6
+wait 3
+shot ui-out/e_ghost.ppm
+click 16 -6
+# Drag & Drop aus der Palette: Spule auf die rechte Leitung (dreht sich automatisch)
+dragpx 195 236 20 0
+# Schalter auf die untere Leitung
+dragpx 44 396 15 6
+wait 3
+dump ui-out/e_open.json
+# Schalter schließen
+dblclick 15 6
+wait 3
+dump ui-out/e_closed.json
+# Leitung verlängern: von der linken Leitung nach links ziehen, Messpunkt ans Ende
+drag 0 -4 -4 -4
+tool Messpunkt
+click -4 -4
+wait 3
+fit
+wait 4
+dump ui-out/e_final.json
+shot ui-out/e_final.ppm
+quit

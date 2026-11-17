@@ -13,10 +13,7 @@ pub struct Matrix {
 
 impl Matrix {
     pub fn zeros(n: usize) -> Self {
-        Self {
-            n,
-            a: vec![0.0; n * n],
-        }
+        Self { n, a: vec![0.0; n * n] }
     }
 
     #[inline]

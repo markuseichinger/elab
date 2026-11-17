@@ -29,15 +29,11 @@ impl Pen<'_> {
     }
 
     pub fn line(&self, a: (f32, f32), b: (f32, f32)) {
-        self.painter
-            .line_segment([self.pt(a.0, a.1), self.pt(b.0, b.1)], self.stroke());
+        self.painter.line_segment([self.pt(a.0, a.1), self.pt(b.0, b.1)], self.stroke());
     }
 
     pub fn thick(&self, a: (f32, f32), b: (f32, f32), f: f32) {
-        self.painter.line_segment(
-            [self.pt(a.0, a.1), self.pt(b.0, b.1)],
-            Stroke::new(self.width * f, self.color),
-        );
+        self.painter.line_segment([self.pt(a.0, a.1), self.pt(b.0, b.1)], Stroke::new(self.width * f, self.color));
     }
 
     pub fn poly(&self, pts: &[(f32, f32)], closed: bool) {
@@ -51,18 +47,15 @@ impl Pen<'_> {
 
     pub fn fill(&self, pts: &[(f32, f32)], fill: Color32) {
         let v: Vec<Pos2> = pts.iter().map(|&(x, y)| self.pt(x, y)).collect();
-        self.painter
-            .add(Shape::convex_polygon(v, fill, Stroke::NONE));
+        self.painter.add(Shape::convex_polygon(v, fill, Stroke::NONE));
     }
 
     pub fn circle(&self, c: (f32, f32), r: f32) {
-        self.painter
-            .circle_stroke(self.pt(c.0, c.1), r * self.s, self.stroke());
+        self.painter.circle_stroke(self.pt(c.0, c.1), r * self.s, self.stroke());
     }
 
     pub fn disc(&self, c: (f32, f32), r: f32, fill: Color32) {
-        self.painter
-            .circle_filled(self.pt(c.0, c.1), r * self.s, fill);
+        self.painter.circle_filled(self.pt(c.0, c.1), r * self.s, fill);
     }
 
     fn arrow_head(&self, tip: (f32, f32), dir: (f32, f32), len: f32) {
@@ -70,14 +63,7 @@ impl Pen<'_> {
         let (dx, dy) = (dir.0 / n, dir.1 / n);
         let (px, py) = (-dy, dx);
         let back = (tip.0 - dx * len, tip.1 - dy * len);
-        self.fill(
-            &[
-                tip,
-                (back.0 + px * len * 0.5, back.1 + py * len * 0.5),
-                (back.0 - px * len * 0.5, back.1 - py * len * 0.5),
-            ],
-            self.color,
-        );
+        self.fill(&[tip, (back.0 + px * len * 0.5, back.1 + py * len * 0.5), (back.0 - px * len * 0.5, back.1 - py * len * 0.5)], self.color);
     }
 }
 
@@ -104,24 +90,12 @@ pub fn draw(pen: &Pen, kind: &PartKind, live: Live) {
             if g > 0.01 {
                 for (k, rr) in [(0, 1.9), (1, 1.4), (2, 1.0)] {
                     let a = (g * [40.0, 70.0, 120.0][k]) as u8;
-                    pen.disc(
-                        (0.0, 0.0),
-                        rr * (0.6 + 0.4 * g),
-                        Color32::from_rgba_unmultiplied(255, 200, 80, a),
-                    );
+                    pen.disc((0.0, 0.0), rr * (0.6 + 0.4 * g), Color32::from_rgba_unmultiplied(255, 200, 80, a));
                 }
             }
             pen.line((-2.0, 0.0), (-0.7, 0.0));
             pen.line((0.7, 0.0), (2.0, 0.0));
-            pen.disc(
-                (0.0, 0.0),
-                0.7,
-                if g > 0.01 {
-                    lerp_rgb([40, 36, 28], [255, 225, 140], g)
-                } else {
-                    body_fill
-                },
-            );
+            pen.disc((0.0, 0.0), 0.7, if g > 0.01 { lerp_rgb([40, 36, 28], [255, 225, 140], g) } else { body_fill });
             pen.circle((0.0, 0.0), 0.7);
             let d = 0.7 * std::f32::consts::FRAC_1_SQRT_2;
             pen.line((-d, -d), (d, d));
@@ -152,11 +126,7 @@ pub fn draw(pen: &Pen, kind: &PartKind, live: Live) {
             let lit = live.glow.clamp(0.0, 1.0);
             if lit > 0.02 {
                 for (rr, a) in [(2.0, 35.0), (1.5, 60.0), (1.05, 110.0)] {
-                    pen.disc(
-                        (0.0, 0.0),
-                        rr * (0.55 + 0.45 * lit),
-                        Color32::from_rgba_unmultiplied(r, g, b, (a * lit) as u8),
-                    );
+                    pen.disc((0.0, 0.0), rr * (0.55 + 0.45 * lit), Color32::from_rgba_unmultiplied(r, g, b, (a * lit) as u8));
                 }
             }
             let fill = lerp_rgb([r / 4, g / 4, b / 4], [r, g, b], lit);
@@ -200,17 +170,7 @@ pub fn draw(pen: &Pen, kind: &PartKind, live: Live) {
         }
         PartKind::SquareVoltage { .. } => {
             source_circle(pen);
-            pen.poly(
-                &[
-                    (-0.55, 0.3),
-                    (-0.55, -0.3),
-                    (0.0, -0.3),
-                    (0.0, 0.3),
-                    (0.55, 0.3),
-                    (0.55, -0.3),
-                ],
-                false,
-            );
+            pen.poly(&[(-0.55, 0.3), (-0.55, -0.3), (0.0, -0.3), (0.0, 0.3), (0.55, 0.3), (0.55, -0.3)], false);
             plus(pen, (0.7, -1.45));
         }
         PartKind::CurrentSource { .. } => {

@@ -8,10 +8,11 @@ use elab_sim::DiodeModel;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+/// Drahtstück auf einer Linie: (von, bis, Draht-ID).
+type Span = (i32, i32, u32);
+
 /// Rasterpunkt.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default)]
 pub struct P {
     pub x: i32,
     pub y: i32,
@@ -96,13 +97,7 @@ pub enum LedColor {
 }
 
 impl LedColor {
-    pub const ALL: [LedColor; 5] = [
-        LedColor::Rot,
-        LedColor::Gelb,
-        LedColor::Gruen,
-        LedColor::Blau,
-        LedColor::Weiss,
-    ];
+    pub const ALL: [LedColor; 5] = [LedColor::Rot, LedColor::Gelb, LedColor::Gruen, LedColor::Blau, LedColor::Weiss];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -139,10 +134,7 @@ impl LedColor {
     /// Der Emissionskoeffizient wird so gewählt, dass der Exponent bei 20 mA bei 30 liegt.
     pub fn model(self) -> DiodeModel {
         let n = self.vf() / (30.0 * elab_sim::diode::VT_300K);
-        DiodeModel {
-            is: 0.02 / (30.0f64.exp() - 1.0),
-            n,
-        }
+        DiodeModel { is: 0.02 / (30.0f64.exp() - 1.0), n }
     }
 }
 
@@ -183,16 +175,8 @@ impl PartKind {
                 "Quellen",
                 vec![
                     PartKind::DcVoltage { v: 9.0 },
-                    PartKind::AcVoltage {
-                        amp: 10.0,
-                        freq: 50.0,
-                        offset: 0.0,
-                    },
-                    PartKind::SquareVoltage {
-                        low: 0.0,
-                        high: 5.0,
-                        freq: 1000.0,
-                    },
+                    PartKind::AcVoltage { amp: 10.0, freq: 50.0, offset: 0.0 },
+                    PartKind::SquareVoltage { low: 0.0, high: 5.0, freq: 1000.0 },
                     PartKind::CurrentSource { i: 0.01 },
                 ],
             ),
@@ -202,40 +186,18 @@ impl PartKind {
                     PartKind::Resistor { r: 1000.0 },
                     PartKind::Capacitor { c: 100e-9 },
                     PartKind::Inductor { l: 1e-3 },
-                    PartKind::Lamp {
-                        v_nom: 12.0,
-                        p_nom: 5.0,
-                    },
+                    PartKind::Lamp { v_nom: 12.0, p_nom: 5.0 },
                 ],
             ),
-            (
-                "Halbleiter",
-                vec![
-                    PartKind::Diode {
-                        kind: DiodeType::Si1N4148,
-                    },
-                    PartKind::Led {
-                        color: LedColor::Rot,
-                    },
-                ],
-            ),
-            (
-                "Schalten & Messen",
-                vec![
-                    PartKind::Switch { closed: false },
-                    PartKind::Ground,
-                    PartKind::Probe,
-                ],
-            ),
+            ("Halbleiter", vec![PartKind::Diode { kind: DiodeType::Si1N4148 }, PartKind::Led { color: LedColor::Rot }]),
+            ("Schalten & Messen", vec![PartKind::Switch { closed: false }, PartKind::Ground, PartKind::Probe]),
         ]
     }
 
     pub fn shape(&self) -> Shape {
         use PartKind::*;
         match self {
-            DcVoltage { .. } | AcVoltage { .. } | SquareVoltage { .. } | CurrentSource { .. } => {
-                Shape::Source
-            }
+            DcVoltage { .. } | AcVoltage { .. } | SquareVoltage { .. } | CurrentSource { .. } => Shape::Source,
             Ground | Probe => Shape::OnePin,
             _ => Shape::TwoPole,
         }
@@ -296,9 +258,7 @@ impl PartKind {
         use PartKind::*;
         match self {
             Diode { .. } | Led { .. } => &["Anode", "Kathode"],
-            DcVoltage { .. } | AcVoltage { .. } | SquareVoltage { .. } | CurrentSource { .. } => {
-                &["+", "−"]
-            }
+            DcVoltage { .. } | AcVoltage { .. } | SquareVoltage { .. } | CurrentSource { .. } => &["+", "−"],
             Ground | Probe => &["Anschluss"],
             _ => &["1", "2"],
         }
@@ -318,20 +278,10 @@ impl PartKind {
                 if *offset == 0.0 {
                     format!("{} ~ {}", si(*amp, "V"), si(*freq, "Hz"))
                 } else {
-                    format!(
-                        "{} ~ {} (+{})",
-                        si(*amp, "V"),
-                        si(*freq, "Hz"),
-                        si(*offset, "V")
-                    )
+                    format!("{} ~ {} (+{})", si(*amp, "V"), si(*freq, "Hz"), si(*offset, "V"))
                 }
             }
-            SquareVoltage { low, high, freq } => format!(
-                "{}…{} {}",
-                si(*low, "V").replace(" V", ""),
-                si(*high, "V"),
-                si(*freq, "Hz")
-            ),
+            SquareVoltage { low, high, freq } => format!("{}…{} {}", si(*low, "V").replace(" V", ""), si(*high, "V"), si(*freq, "Hz")),
             CurrentSource { i } => si(*i, "A"),
             Diode { kind } => kind.label().into(),
             Led { color } => format!("LED {}", color.label()),
@@ -372,11 +322,7 @@ pub struct Part {
 impl Part {
     /// Pins in Rasterkoordinaten.
     pub fn pins(&self) -> Vec<P> {
-        self.kind
-            .local_pins()
-            .iter()
-            .map(|&p| self.pos + rot_i(p, self.rot))
-            .collect()
+        self.kind.local_pins().iter().map(|&p| self.pos + rot_i(p, self.rot)).collect()
     }
 
     /// Hüllbox in Rasterkoordinaten.
@@ -385,12 +331,7 @@ impl Part {
         let (ax, ay) = rot_f(x0, y0, self.rot);
         let (bx, by) = rot_f(x1, y1, self.rot);
         let (px, py) = (self.pos.x as f32, self.pos.y as f32);
-        (
-            px + ax.min(bx),
-            py + ay.min(by),
-            px + ax.max(bx),
-            py + ay.max(by),
-        )
+        (px + ax.min(bx), py + ay.min(by), px + ax.max(bx), py + ay.max(by))
     }
 }
 
@@ -439,13 +380,7 @@ pub struct Document {
 
 impl Default for Document {
     fn default() -> Self {
-        Self {
-            format: Self::format_version(),
-            title: String::new(),
-            parts: Vec::new(),
-            wires: Vec::new(),
-            next_id: 1,
-        }
+        Self { format: Self::format_version(), title: String::new(), parts: Vec::new(), wires: Vec::new(), next_id: 1 }
     }
 }
 
@@ -463,27 +398,14 @@ impl Document {
     /// Nächster freier Name mit diesem Präfix, z. B. „R3“.
     pub fn next_name(&self, prefix: &str) -> String {
         let used: HashSet<&str> = self.parts.iter().map(|p| p.name.as_str()).collect();
-        (1..)
-            .map(|n| format!("{prefix}{n}"))
-            .find(|n| !used.contains(n.as_str()))
-            .unwrap()
+        (1..).map(|n| format!("{prefix}{n}")).find(|n| !used.contains(n.as_str())).unwrap()
     }
 
     /// Platziert ein Bauteil mit automatischem Namen und gibt seine ID zurück.
     pub fn add_part(&mut self, kind: PartKind, pos: P, rot: u8) -> u32 {
-        let name = if matches!(kind, PartKind::Ground) {
-            "GND".to_string()
-        } else {
-            self.next_name(kind.prefix())
-        };
+        let name = if matches!(kind, PartKind::Ground) { "GND".to_string() } else { self.next_name(kind.prefix()) };
         let id = self.new_id();
-        self.parts.push(Part {
-            id,
-            name,
-            kind,
-            pos,
-            rot: rot % 4,
-        });
+        self.parts.push(Part { id, name, kind, pos, rot: rot % 4 });
         id
     }
 
@@ -522,10 +444,7 @@ impl Document {
 
     /// Alle Pins mit Eigentümer.
     pub fn pins(&self) -> Vec<(P, u32)> {
-        self.parts
-            .iter()
-            .flat_map(|p| p.pins().into_iter().map(move |q| (q, p.id)))
-            .collect()
+        self.parts.iter().flat_map(|p| p.pins().into_iter().map(move |q| (q, p.id))).collect()
     }
 
     /// Ist `p` ein Anschlusspunkt (Pin, Drahtende oder auf einem Draht)?
@@ -535,12 +454,7 @@ impl Document {
 
     /// Anzahl der Verbindungen an einem Punkt (für Knotenpunkte und offene Enden).
     pub fn degree(&self, p: P) -> usize {
-        let pins = self
-            .parts
-            .iter()
-            .flat_map(|q| q.pins())
-            .filter(|&q| q == p)
-            .count();
+        let pins = self.parts.iter().flat_map(|q| q.pins()).filter(|&q| q == p).count();
         let wires: usize = self
             .wires
             .iter()
@@ -557,43 +471,117 @@ impl Document {
         pins + wires
     }
 
-    /// Räumt Drähte auf: Nullängen und Doppelte entfernen, Diagonalen als L verlegen.
+    /// Räumt Drähte auf:
+    /// 1. Diagonalen als L verlegen, Nullängen entfernen
+    /// 2. Drähte auf derselben Linie zusammenfassen, wenn sie sich überlappen oder
+    ///    an einem Punkt ohne Bauteilanschluss aneinanderstoßen
+    /// 3. Leitungsstücke unter dem Körper eines Zweipols entfernen: Ein Bauteil, das auf
+    ///    eine Leitung gesetzt wird, ist damit *eingefügt* statt kurzgeschlossen.
     pub fn normalize(&mut self) {
-        let mut out: Vec<Wire> = Vec::new();
-        let mut seen: HashSet<(P, P)> = HashSet::new();
-        let old = std::mem::take(&mut self.wires);
-        for w in old {
-            let segs = if w.is_orthogonal() {
-                vec![(w.a, w.b)]
+        // 1. orthogonal machen
+        let mut segs: Vec<(u32, P, P)> = Vec::new();
+        for w in std::mem::take(&mut self.wires) {
+            if w.is_orthogonal() {
+                segs.push((w.id, w.a, w.b));
             } else {
                 let c = P::new(w.b.x, w.a.y);
-                vec![(w.a, c), (c, w.b)]
-            };
-            for (k, (a, b)) in segs.into_iter().enumerate() {
-                if a == b {
-                    continue;
-                }
-                let key = if a < b { (a, b) } else { (b, a) };
-                if !seen.insert(key) {
-                    continue;
-                }
-                let id = if k == 0 { w.id } else { self.new_id() };
-                out.push(Wire { id, a, b });
+                segs.push((w.id, w.a, c));
+                let id = self.new_id();
+                segs.push((id, c, w.b));
             }
         }
-        self.wires = out;
+        segs.retain(|s| s.1 != s.2);
+
+        // 2. je Linie sortieren und zusammenfassen
+        let pins: HashSet<P> = self.parts.iter().flat_map(|p| p.pins()).collect();
+        let mut lines: HashMap<(bool, i32), Vec<Span>> = HashMap::new();
+        for (id, a, b) in segs {
+            if a.y == b.y {
+                lines.entry((true, a.y)).or_default().push((a.x.min(b.x), a.x.max(b.x), id));
+            } else {
+                lines.entry((false, a.x)).or_default().push((a.y.min(b.y), a.y.max(b.y), id));
+            }
+        }
+        let at = |h: bool, c: i32, v: i32| if h { P::new(v, c) } else { P::new(c, v) };
+        let mut merged: Vec<(bool, i32, i32, i32, u32)> = Vec::new();
+        let mut keys: Vec<_> = lines.keys().copied().collect();
+        keys.sort();
+        for key in keys {
+            let mut iv = lines.remove(&key).unwrap();
+            iv.sort();
+            let (h, c) = key;
+            let mut cur = iv[0];
+            for &n in &iv[1..] {
+                let touching = n.0 == cur.1 && !pins.contains(&at(h, c, n.0));
+                if n.0 < cur.1 || touching {
+                    cur.1 = cur.1.max(n.1);
+                } else {
+                    merged.push((h, c, cur.0, cur.1, cur.2));
+                    cur = n;
+                }
+            }
+            merged.push((h, c, cur.0, cur.1, cur.2));
+        }
+
+        // 3. unter Zweipolen ausschneiden
+        let bodies: Vec<(bool, i32, i32, i32)> = self
+            .parts
+            .iter()
+            .filter_map(|p| {
+                let pins = p.pins();
+                if pins.len() != 2 {
+                    return None;
+                }
+                let (a, b) = (pins[0], pins[1]);
+                if a.y == b.y {
+                    Some((true, a.y, a.x.min(b.x), a.x.max(b.x)))
+                } else if a.x == b.x {
+                    Some((false, a.x, a.y.min(b.y), a.y.max(b.y)))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (h, c, lo, hi) in bodies {
+            let mut next = Vec::new();
+            for m in merged {
+                if m.0 == h && m.1 == c && m.2 < hi && m.3 > lo {
+                    if m.2 < lo {
+                        next.push((h, c, m.2, lo, m.4));
+                    }
+                    if m.3 > hi {
+                        let id = if m.2 < lo { self.new_id() } else { m.4 };
+                        next.push((h, c, hi, m.3, id));
+                    }
+                } else {
+                    next.push(m);
+                }
+            }
+            merged = next;
+        }
+        self.wires = merged.into_iter().map(|(h, c, lo, hi, id)| Wire { id, a: at(h, c, lo), b: at(h, c, hi) }).collect();
+    }
+
+    /// Würde ein Bauteil mit diesen Pins in eine bestehende Leitung eingefügt?
+    pub fn would_insert(&self, pins: &[P]) -> bool {
+        pins.len() == 2 && self.wires.iter().any(|w| w.contains(pins[0]) && w.contains(pins[1]))
+    }
+
+    /// Drehung beim Absetzen: Liegt ein Zweipol quer über einer Leitung, wird er
+    /// um 90° gedreht, damit er eingefügt wird.
+    pub fn snap_rotation(&self, kind: &PartKind, pos: P, rot: u8) -> u8 {
+        let pins = |r: u8| kind.local_pins().iter().map(|&q| pos + rot_i(q, r)).collect::<Vec<_>>();
+        if !self.would_insert(&pins(rot)) && self.would_insert(&pins(rot + 1)) {
+            (rot + 1) % 4
+        } else {
+            rot
+        }
     }
 
     /// Verändert Bauteile und zieht angeschlossene Drahtenden mit (Gummiband).
     ///
     /// `moved_wires` werden komplett um `wire_delta` verschoben.
-    pub fn transform_parts(
-        &mut self,
-        ids: &HashSet<u32>,
-        moved_wires: &HashSet<u32>,
-        wire_delta: P,
-        f: impl Fn(&mut Part),
-    ) {
+    pub fn transform_parts(&mut self, ids: &HashSet<u32>, moved_wires: &HashSet<u32>, wire_delta: P, f: impl Fn(&mut Part)) {
         let mut map: HashMap<P, P> = HashMap::new();
         for p in self.parts.iter_mut().filter(|p| ids.contains(&p.id)) {
             let before = p.pins();
@@ -604,12 +592,7 @@ impl Document {
         }
         // Pins anderer Bauteile, die an derselben Stelle liegen, bleiben fest:
         // dort wird nicht mitgezogen, sonst würden fremde Verbindungen gerissen.
-        let fixed: HashSet<P> = self
-            .parts
-            .iter()
-            .filter(|p| !ids.contains(&p.id))
-            .flat_map(|p| p.pins())
-            .collect();
+        let fixed: HashSet<P> = self.parts.iter().filter(|p| !ids.contains(&p.id)).flat_map(|p| p.pins()).collect();
         for w in &mut self.wires {
             if moved_wires.contains(&w.id) {
                 w.a = w.a + wire_delta;
@@ -625,9 +608,7 @@ impl Document {
             }
         }
         // Schräg gewordene Drähte als L verlegen, Knick möglichst nicht durch ein Bauteil
-        let diagonals: Vec<usize> = (0..self.wires.len())
-            .filter(|&k| !self.wires[k].is_orthogonal())
-            .collect();
+        let diagonals: Vec<usize> = (0..self.wires.len()).filter(|&k| !self.wires[k].is_orthogonal()).collect();
         for k in diagonals.into_iter().rev() {
             let Wire { id, a, b } = self.wires[k];
             let c = self.best_corner(a, b);
@@ -676,12 +657,7 @@ impl Document {
             grow(x0, y0, x1, y1);
         }
         for w in &self.wires {
-            grow(
-                w.a.x.min(w.b.x) as f32,
-                w.a.y.min(w.b.y) as f32,
-                w.a.x.max(w.b.x) as f32,
-                w.a.y.max(w.b.y) as f32,
-            );
+            grow(w.a.x.min(w.b.x) as f32, w.a.y.min(w.b.y) as f32, w.a.x.max(w.b.x) as f32, w.a.y.max(w.b.y) as f32);
         }
         b
     }
@@ -691,15 +667,8 @@ impl Document {
     }
 
     pub fn from_json(s: &str) -> Result<Self, String> {
-        let mut d: Document =
-            serde_json::from_str(s).map_err(|e| format!("Datei nicht lesbar: {e}"))?;
-        let max = d
-            .parts
-            .iter()
-            .map(|p| p.id)
-            .chain(d.wires.iter().map(|w| w.id))
-            .max()
-            .unwrap_or(0);
+        let mut d: Document = serde_json::from_str(s).map_err(|e| format!("Datei nicht lesbar: {e}"))?;
+        let max = d.parts.iter().map(|p| p.id).chain(d.wires.iter().map(|w| w.id)).max().unwrap_or(0);
         d.next_id = d.next_id.max(max + 1);
         Ok(d)
     }
@@ -776,10 +745,7 @@ mod tests {
     fn pins_follow_rotation() {
         let mut d = Document::default();
         let id = d.add_part(PartKind::Resistor { r: 1.0 }, P::new(10, 10), 1);
-        assert_eq!(
-            d.part(id).unwrap().pins(),
-            vec![P::new(10, 8), P::new(10, 12)]
-        );
+        assert_eq!(d.part(id).unwrap().pins(), vec![P::new(10, 8), P::new(10, 12)]);
     }
 
     #[test]
@@ -806,9 +772,7 @@ mod tests {
         let id = d.add_part(PartKind::Resistor { r: 1.0 }, P::new(0, 0), 0);
         d.add_wire(P::new(2, 0), P::new(6, 0)); // am rechten Pin
         let ids: HashSet<u32> = [id].into();
-        d.transform_parts(&ids, &HashSet::new(), P::new(0, 0), |p| {
-            p.pos = p.pos + P::new(0, 3)
-        });
+        d.transform_parts(&ids, &HashSet::new(), P::new(0, 0), |p| p.pos = p.pos + P::new(0, 3));
         // Pin jetzt bei (2,3): Draht wird zu L (2,3)→(6,3)→(6,0)
         assert!(d.is_connection(P::new(2, 3)));
         assert!(d.is_connection(P::new(6, 0)));
@@ -824,11 +788,54 @@ mod tests {
         d.transform_parts(&ids, &HashSet::new(), P::default(), |p| p.rot = 1); // Pins (6,-6) (6,-2)
                                                                                // Der Draht darf nicht durch den Widerstandskörper (x=6, y −6…−2) laufen
         for w in &d.wires {
-            let through =
-                w.a.x == 6 && w.b.x == 6 && w.a.y.min(w.b.y) < -2 && w.a.y.max(w.b.y) > -6;
+            let through = w.a.x == 6 && w.b.x == 6 && w.a.y.min(w.b.y) < -2 && w.a.y.max(w.b.y) > -6;
             assert!(!through, "{w:?}");
         }
         assert!(d.is_connection(P::new(6, -6)));
+    }
+
+    #[test]
+    fn part_dropped_on_wire_is_inserted() {
+        let mut d = Document::default();
+        d.add_wire(P::new(0, 0), P::new(10, 0));
+        d.add_part(PartKind::Resistor { r: 1.0 }, P::new(5, 0), 0); // Pins (3,0) (7,0)
+        d.normalize();
+        // Kein Draht darf mehr zwischen den Pins verlaufen (sonst Kurzschluss)
+        assert!(d.wires.iter().all(|w| !(w.contains(P::new(4, 0)) || w.contains(P::new(6, 0)))));
+        assert!(d.is_connection(P::new(0, 0)) && d.is_connection(P::new(10, 0)));
+        assert_eq!(d.wires.len(), 2);
+        // Elektrisch: zwei Netze, R dazwischen
+        let nl = crate::netlist::build(&d);
+        let pn = &nl.pin_nets[&d.parts[0].id];
+        assert_ne!(pn[0], pn[1]);
+    }
+
+    #[test]
+    fn vertical_source_inserted_into_vertical_wire() {
+        let mut d = Document::default();
+        d.add_wire(P::new(2, -5), P::new(2, 5));
+        d.add_part(PartKind::DcVoltage { v: 1.0 }, P::new(2, 0), 0);
+        d.normalize();
+        assert_eq!(d.wires.len(), 2);
+        assert!(!d.wires.iter().any(|w| w.contains(P::new(2, 0))));
+    }
+
+    #[test]
+    fn collinear_wires_are_merged_but_not_across_pins() {
+        let mut d = Document::default();
+        d.add_wire(P::new(0, 0), P::new(3, 0));
+        d.add_wire(P::new(3, 0), P::new(6, 0));
+        d.add_wire(P::new(4, 0), P::new(9, 0)); // überlappend
+        d.normalize();
+        assert_eq!(d.wires.len(), 1);
+        assert_eq!((d.wires[0].a, d.wires[0].b), (P::new(0, 0), P::new(9, 0)));
+        // An einem Bauteilanschluss bleiben die Stücke getrennt (damit sie beim Verschieben mitgehen)
+        let mut e = Document::default();
+        e.add_part(PartKind::Ground, P::new(3, 0), 0);
+        e.add_wire(P::new(0, 0), P::new(3, 0));
+        e.add_wire(P::new(3, 0), P::new(6, 0));
+        e.normalize();
+        assert_eq!(e.wires.len(), 2);
     }
 
     #[test]
@@ -846,13 +853,7 @@ mod tests {
     #[test]
     fn json_roundtrip() {
         let mut d = Document::default();
-        d.add_part(
-            PartKind::Led {
-                color: LedColor::Blau,
-            },
-            P::new(1, 2),
-            3,
-        );
+        d.add_part(PartKind::Led { color: LedColor::Blau }, P::new(1, 2), 3);
         d.add_wire(P::new(0, 0), P::new(0, 5));
         let back = Document::from_json(&d.to_json()).unwrap();
         assert_eq!(back, d);

@@ -16,17 +16,11 @@ impl DiodeModel {
     /// Lehrbuchdiode: Is = 1e-14 A, n = 1.
     pub const IDEAL: DiodeModel = DiodeModel { is: 1e-14, n: 1.0 };
     /// Kleinsignal-Siliziumdiode ähnlich 1N4148.
-    pub const SI_1N4148: DiodeModel = DiodeModel {
-        is: 2.52e-9,
-        n: 1.752,
-    };
+    pub const SI_1N4148: DiodeModel = DiodeModel { is: 2.52e-9, n: 1.752 };
     /// Gleichrichterdiode ähnlich 1N4007.
     pub const SI_1N4007: DiodeModel = DiodeModel { is: 7.0e-9, n: 1.8 };
     /// Rote LED (Flussspannung ≈ 1,8 V bei 20 mA).
-    pub const LED_RED: DiodeModel = DiodeModel {
-        is: 3.0e-18,
-        n: 1.9,
-    };
+    pub const LED_RED: DiodeModel = DiodeModel { is: 3.0e-18, n: 1.9 };
 
     #[inline]
     pub fn nvt(&self) -> f64 {

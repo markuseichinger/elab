@@ -57,17 +57,8 @@ impl Topic {
     }
 
     /// Themen für das Inhaltsverzeichnis.
-    pub const BASICS: [Topic; 9] = [
-        Topic::Welcome,
-        Topic::Editor,
-        Topic::Nets,
-        Topic::Ground,
-        Topic::Ohm,
-        Topic::Kirchhoff,
-        Topic::OperatingPoint,
-        Topic::Colors,
-        Topic::Scope,
-    ];
+    pub const BASICS: [Topic; 9] =
+        [Topic::Welcome, Topic::Editor, Topic::Nets, Topic::Ground, Topic::Ohm, Topic::Kirchhoff, Topic::OperatingPoint, Topic::Colors, Topic::Scope];
 }
 
 pub fn doc(t: Topic) -> Doc {
@@ -88,8 +79,10 @@ pub fn doc(t: Topic) -> Doc {
         },
         Editor => Doc {
             title: "Bedienung des Editors",
-            what: "Bauteil platzieren: in der Palette anklicken, dann in den Schaltplan klicken. Mit R drehst du es vor dem Absetzen.\n\
-                   Verdrahten: von einem Anschluss (kleiner Kreis am Bauteilende) zum Ziel ziehen. Oder Werkzeug „Draht“ (W): \
+            what: "Bauteil platzieren: aus der Palette in den Schaltplan ziehen, oder anklicken und dann absetzen. R dreht, auch während des Ziehens. \
+                   Setzt du ein Bauteil auf eine Leitung, wird es eingefügt: Die Leitung unter dem Bauteil verschwindet, sonst wäre es kurzgeschlossen. \
+                   Quer liegende Bauteile drehen sich dabei automatisch passend (grüne Vorschau).\n\
+                   Verdrahten: von einem Anschluss oder von irgendeiner Stelle einer Leitung aus ziehen, so verlängerst du Leitungen oder zweigst ab. Oder Werkzeug „Draht“ (W): \
                    jeder Klick setzt eine Ecke, Doppelklick oder Esc beendet. Die Leertaste wechselt die Knickrichtung.\n\
                    Auswählen und verschieben: anklicken bzw. ziehen. Angeschlossene Drähte gehen mit. Ein Rahmen auf freier Fläche \
                    wählt mehrere Teile aus.\n\

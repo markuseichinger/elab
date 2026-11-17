@@ -38,14 +38,7 @@ pub struct SimOptions {
 
 impl Default for SimOptions {
     fn default() -> Self {
-        Self {
-            reltol: 1e-4,
-            vntol: 1e-7,
-            abstol: 1e-10,
-            gshunt: 1e-12,
-            max_iter_dc: 150,
-            max_iter_tran: 40,
-        }
+        Self { reltol: 1e-4, vntol: 1e-7, abstol: 1e-10, gshunt: 1e-12, max_iter_dc: 150, max_iter_tran: 40 }
     }
 }
 
@@ -68,14 +61,7 @@ pub struct TranOptions {
 
 impl TranOptions {
     pub fn new(t_stop: f64, h_max: f64) -> Self {
-        Self {
-            t_stop,
-            h_max,
-            h_min: (t_stop * 1e-15).max(1e-18),
-            use_ic: false,
-            lte_reltol: 1e-3,
-            lte_abstol: 1e-6,
-        }
+        Self { t_stop, h_max, h_min: (t_stop * 1e-15).max(1e-18), use_ic: false, lte_reltol: 1e-3, lte_abstol: 1e-6 }
     }
 
     pub fn with_ic(mut self) -> Self {
@@ -154,14 +140,7 @@ impl Layout {
             }
         }
         let nonlinear = c.elements().iter().any(|e| e.kind.is_nonlinear());
-        Self {
-            n_nodes,
-            size,
-            branch,
-            diode,
-            n_diodes,
-            nonlinear,
-        }
+        Self { n_nodes, size, branch, diode, n_diodes, nonlinear }
     }
 }
 
@@ -182,10 +161,7 @@ struct System {
 
 impl System {
     fn new(n: usize) -> Self {
-        Self {
-            m: Matrix::zeros(n),
-            rhs: vec![0.0; n],
-        }
+        Self { m: Matrix::zeros(n), rhs: vec![0.0; n] }
     }
 
     fn clear(&mut self) {
@@ -249,12 +225,7 @@ pub struct Stats {
 impl<'c> Simulator<'c> {
     pub fn new(circuit: &'c Circuit) -> Result<Self, SimError> {
         circuit.check_connectivity()?;
-        Ok(Self {
-            circuit,
-            layout: Layout::new(circuit),
-            options: SimOptions::default(),
-            stats: Stats::default(),
-        })
+        Ok(Self { circuit, layout: Layout::new(circuit), options: SimOptions::default(), stats: Stats::default() })
     }
 
     /// Anzahl der Unbekannten im Gleichungssystem.
@@ -278,13 +249,7 @@ impl<'c> Simulator<'c> {
         for (ei, e) in self.circuit.elements().iter().enumerate() {
             match &e.kind {
                 ElementKind::Resistor { a, b, r } => sys.conductance(*a, *b, 1.0 / r),
-                ElementKind::Switch {
-                    a,
-                    b,
-                    closed,
-                    r_on,
-                    r_off,
-                } => sys.conductance(*a, *b, 1.0 / if *closed { r_on } else { r_off }),
+                ElementKind::Switch { a, b, closed, r_on, r_off } => sys.conductance(*a, *b, 1.0 / if *closed { r_on } else { r_off }),
                 ElementKind::Capacitor { a, b, c, ic } => match ctx.mode {
                     Mode::Dc => {}
                     Mode::InitIc => {
@@ -365,12 +330,7 @@ impl<'c> Simulator<'c> {
     }
 
     /// Newton-Raphson ab Startwert `x`; bei Erfolg steht die Lösung in `x`.
-    fn newton(
-        &mut self,
-        x: &mut Vec<f64>,
-        ctx: &Ctx,
-        max_iter: usize,
-    ) -> Result<usize, NewtonFail> {
+    fn newton(&mut self, x: &mut Vec<f64>, ctx: &Ctx, max_iter: usize) -> Result<usize, NewtonFail> {
         let n = self.layout.size;
         let nv = self.layout.n_nodes - 1;
         let mut sys = System::new(n);
@@ -379,9 +339,7 @@ impl<'c> Simulator<'c> {
         for it in 1..=max_iter {
             let limited = self.assemble(x, ctx, &mut dv, &mut sys);
             let mut sol = sys.rhs.clone();
-            sys.m
-                .solve_in_place(&mut sol)
-                .map_err(NewtonFail::Singular)?;
+            sys.m.solve_in_place(&mut sol).map_err(NewtonFail::Singular)?;
             self.stats.newton_iterations += 1;
             if !self.layout.nonlinear {
                 *x = sol;
@@ -390,8 +348,7 @@ impl<'c> Simulator<'c> {
             let mut conv = !limited;
             if conv {
                 for i in 0..n {
-                    let tol = o.reltol * sol[i].abs().max(x[i].abs())
-                        + if i < nv { o.vntol } else { o.abstol };
+                    let tol = o.reltol * sol[i].abs().max(x[i].abs()) + if i < nv { o.vntol } else { o.abstol };
                     if (sol[i] - x[i]).abs() > tol {
                         conv = false;
                         break;
@@ -422,11 +379,7 @@ impl<'c> Simulator<'c> {
             match ei {
                 Some(ei) => {
                     let e = &self.circuit.elements()[ei];
-                    format!(
-                        "Prüfe {} „{}“: Sie liegt vermutlich in einer Masche nur aus Spannungsquellen und Spulen.",
-                        e.kind.type_name(),
-                        e.name
-                    )
+                    format!("Prüfe {} „{}“: Sie liegt vermutlich in einer Masche nur aus Spannungsquellen und Spulen.", e.kind.type_name(), e.name)
                 }
                 None => "Prüfe die Schaltung auf Maschen aus Spannungsquellen.".into(),
             }
@@ -435,9 +388,7 @@ impl<'c> Simulator<'c> {
 
     fn map_fail(&self, f: NewtonFail, time: Option<f64>) -> SimError {
         match f {
-            NewtonFail::Singular(r) => SimError::Singular {
-                hint: self.singular_hint(r),
-            },
+            NewtonFail::Singular(r) => SimError::Singular { hint: self.singular_hint(r) },
             NewtonFail::NoConvergence => SimError::NoConvergence { time },
         }
     }
@@ -451,21 +402,13 @@ impl<'c> Simulator<'c> {
     fn solve_dc(&mut self, t: f64) -> Result<Vec<f64>, SimError> {
         let n = self.layout.size;
         let max_it = self.options.max_iter_dc;
-        let ctx = |g_extra: f64, src_scale: f64| Ctx {
-            t,
-            mode: Mode::Dc,
-            src_scale,
-            g_extra,
-            react: &[],
-        };
+        let ctx = |g_extra: f64, src_scale: f64| Ctx { t, mode: Mode::Dc, src_scale, g_extra, react: &[] };
 
         // 1. Direkter Versuch
         let mut x = vec![0.0; n];
         match self.newton(&mut x, &ctx(0.0, 1.0), max_it) {
             Ok(_) => return Ok(x),
-            Err(NewtonFail::Singular(r)) => {
-                return Err(self.map_fail(NewtonFail::Singular(r), None))
-            }
+            Err(NewtonFail::Singular(r)) => return Err(self.map_fail(NewtonFail::Singular(r), None)),
             Err(NewtonFail::NoConvergence) => {}
         }
 
@@ -488,8 +431,7 @@ impl<'c> Simulator<'c> {
         // 3. Source-Stepping: alle Quellen von 0 % auf 100 % hochfahren
         self.stats.source_stepping = true;
         let mut x = vec![0.0; n];
-        self.newton(&mut x, &ctx(0.0, 0.0), max_it)
-            .map_err(|f| self.map_fail(f, None))?;
+        self.newton(&mut x, &ctx(0.0, 0.0), max_it).map_err(|f| self.map_fail(f, None))?;
         let (mut scale, mut step) = (0.0_f64, 0.1_f64);
         while scale < 1.0 {
             let next = (scale + step).min(1.0);
@@ -513,11 +455,7 @@ impl<'c> Simulator<'c> {
         let x = self.solve_dc(0.0)?;
         let react = vec![Reactive::default(); self.circuit.elements().len()];
         let currents = self.element_currents(&x, &react, 0.0);
-        Ok(OpResult {
-            probe: Probe::new(self.circuit),
-            x,
-            currents,
-        })
+        Ok(OpResult { probe: Probe::new(self.circuit), x, currents })
     }
 
     // ---------------------------------------------------------------------
@@ -528,9 +466,7 @@ impl<'c> Simulator<'c> {
         let mut bp = Vec::new();
         for e in self.circuit.elements() {
             match &e.kind {
-                ElementKind::VSource { wave, .. } | ElementKind::ISource { wave, .. } => {
-                    wave.breakpoints(t_stop, &mut bp)
-                }
+                ElementKind::VSource { wave, .. } | ElementKind::ISource { wave, .. } => wave.breakpoints(t_stop, &mut bp),
                 _ => {}
             }
         }
@@ -553,16 +489,9 @@ impl<'c> Simulator<'c> {
 
         // Anfangszustand
         let x0 = if opts.use_ic {
-            let ctx = Ctx {
-                t: 0.0,
-                mode: Mode::InitIc,
-                src_scale: 1.0,
-                g_extra: 0.0,
-                react: &react,
-            };
+            let ctx = Ctx { t: 0.0, mode: Mode::InitIc, src_scale: 1.0, g_extra: 0.0, react: &react };
             let mut x = vec![0.0; self.layout.size];
-            self.newton(&mut x, &ctx, self.options.max_iter_dc)
-                .map_err(|f| self.map_fail(f, Some(0.0)))?;
+            self.newton(&mut x, &ctx, self.options.max_iter_dc).map_err(|f| self.map_fail(f, Some(0.0)))?;
             x
         } else {
             self.solve_dc(0.0)?
@@ -570,19 +499,12 @@ impl<'c> Simulator<'c> {
         for (ei, e) in self.circuit.elements().iter().enumerate() {
             match e.kind {
                 ElementKind::Capacitor { a, b, ic, .. } => {
-                    let v = if opts.use_ic {
-                        ic.unwrap_or(0.0)
-                    } else {
-                        volt(&x0, a) - volt(&x0, b)
-                    };
+                    let v = if opts.use_ic { ic.unwrap_or(0.0) } else { volt(&x0, a) - volt(&x0, b) };
                     react[ei] = Reactive { v, i: 0.0 };
                 }
                 ElementKind::Inductor { a, b, .. } => {
                     let br = self.layout.branch[ei].unwrap();
-                    react[ei] = Reactive {
-                        v: volt(&x0, a) - volt(&x0, b),
-                        i: x0[br],
-                    };
+                    react[ei] = Reactive { v: volt(&x0, a) - volt(&x0, b), i: x0[br] };
                     if !opts.use_ic {
                         react[ei].v = 0.0;
                     }
@@ -615,11 +537,7 @@ impl<'c> Simulator<'c> {
                 hit = true;
             }
             let h_eff = t_new - t;
-            let method = if after_bp {
-                Method::BackwardEuler
-            } else {
-                Method::Trapezoidal
-            };
+            let method = if after_bp { Method::BackwardEuler } else { Method::Trapezoidal };
 
             // Startwert: Extrapolation, falls verfügbar
             let mut x_new = if hist.len() >= 2 && !after_bp {
@@ -630,18 +548,10 @@ impl<'c> Simulator<'c> {
             } else {
                 x.clone()
             };
-            let ctx = Ctx {
-                t: t_new,
-                mode: Mode::Tran { h: h_eff, method },
-                src_scale: 1.0,
-                g_extra: 0.0,
-                react: &react,
-            };
+            let ctx = Ctx { t: t_new, mode: Mode::Tran { h: h_eff, method }, src_scale: 1.0, g_extra: 0.0, react: &react };
             match self.newton(&mut x_new, &ctx, self.options.max_iter_tran) {
                 Ok(_) => {}
-                Err(NewtonFail::Singular(r)) => {
-                    return Err(self.map_fail(NewtonFail::Singular(r), Some(t_new)))
-                }
+                Err(NewtonFail::Singular(r)) => return Err(self.map_fail(NewtonFail::Singular(r), Some(t_new))),
                 Err(NewtonFail::NoConvergence) => {
                     self.stats.rejected_steps += 1;
                     h = h_eff / 8.0;
@@ -676,11 +586,7 @@ impl<'c> Simulator<'c> {
                     h = h_eff * (0.9 * ratio.powf(-1.0 / 3.0)).max(0.2);
                     continue;
                 }
-                growth = if ratio > 0.0 {
-                    (0.9 * ratio.powf(-1.0 / 3.0)).clamp(0.5, 2.0)
-                } else {
-                    2.0
-                };
+                growth = if ratio > 0.0 { (0.9 * ratio.powf(-1.0 / 3.0)).clamp(0.5, 2.0) } else { 2.0 };
             }
 
             // Schritt annehmen: Zustände der Energiespeicher fortschreiben
@@ -697,10 +603,7 @@ impl<'c> Simulator<'c> {
                     }
                     ElementKind::Inductor { a, b, .. } => {
                         let br = self.layout.branch[ei].unwrap();
-                        react[ei] = Reactive {
-                            v: volt(&x_new, a) - volt(&x_new, b),
-                            i: x_new[br],
-                        };
+                        react[ei] = Reactive { v: volt(&x_new, a) - volt(&x_new, b), i: x_new[br] };
                     }
                     _ => {}
                 }
@@ -741,13 +644,7 @@ impl<'c> Simulator<'c> {
             .enumerate()
             .map(|(ei, e)| match &e.kind {
                 ElementKind::Resistor { a, b, r } => (volt(x, *a) - volt(x, *b)) / r,
-                ElementKind::Switch {
-                    a,
-                    b,
-                    closed,
-                    r_on,
-                    r_off,
-                } => (volt(x, *a) - volt(x, *b)) / if *closed { r_on } else { r_off },
+                ElementKind::Switch { a, b, closed, r_on, r_off } => (volt(x, *a) - volt(x, *b)) / if *closed { r_on } else { r_off },
                 ElementKind::Capacitor { .. } => react.get(ei).map_or(0.0, |s| s.i),
                 ElementKind::Inductor { .. } => x[self.layout.branch[ei].unwrap()],
                 ElementKind::VSource { .. } => -x[self.layout.branch[ei].unwrap()],
@@ -779,32 +676,17 @@ impl Probe {
         for alias in ["0", "gnd", "GND", "masse"] {
             nodes.insert(alias.into(), 0);
         }
-        let elems = c
-            .elements()
-            .iter()
-            .enumerate()
-            .map(|(i, e)| (e.name.clone(), i))
-            .collect();
+        let elems = c.elements().iter().enumerate().map(|(i, e)| (e.name.clone(), i)).collect();
         let terminals = c.elements().iter().map(|e| e.kind.terminals()).collect();
-        Self {
-            nodes,
-            elems,
-            terminals,
-        }
+        Self { nodes, elems, terminals }
     }
 
     fn node(&self, name: &str) -> Result<NodeId, SimError> {
-        self.nodes
-            .get(name)
-            .copied()
-            .ok_or_else(|| SimError::UnknownName(name.into()))
+        self.nodes.get(name).copied().ok_or_else(|| SimError::UnknownName(name.into()))
     }
 
     fn elem(&self, name: &str) -> Result<usize, SimError> {
-        self.elems
-            .get(name)
-            .copied()
-            .ok_or_else(|| SimError::UnknownName(name.into()))
+        self.elems.get(name).copied().ok_or_else(|| SimError::UnknownName(name.into()))
     }
 }
 
