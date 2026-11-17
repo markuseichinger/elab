@@ -439,7 +439,7 @@ impl DigitalSim {
 
     /// Pegel eines Netzes.
     pub fn net(&self, n: usize) -> Logic {
-        self.net[n]
+        self.net.get(n).copied().unwrap_or(Logic::Z)
     }
 
     pub fn nets(&self) -> &[Logic] {

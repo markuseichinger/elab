@@ -100,7 +100,7 @@ pub fn record(doc: &Document, nl: &Netlist, t_stop: f64) -> Result<ScopeData, St
     let res = sim.transient(&TranOptions::new(t_stop, t_stop / 1000.0)).map_err(|e| e.to_string())?;
     let mut traces = Vec::new();
     for (id, name, color_idx) in probes(doc) {
-        let net = nl.pin_nets[&id][0];
+        let Some(&net) = nl.pin_nets.get(&id).and_then(|v| v.first()) else { continue };
         let info = &nl.nets[net];
         let v: Vec<f64> = if info.is_gnd {
             vec![0.0; res.len()]

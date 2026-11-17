@@ -30,6 +30,7 @@ fn main() -> eframe::Result {
     });
     let size = arg("--size").and_then(|s| s.split_once('x').and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?]))).unwrap_or([1560.0, 980.0]);
     let file = args.iter().skip(1).find(|a| a.ends_with(".elab")).map(PathBuf::from);
+    install_crash_handler(script.is_none());
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("elab – Elektronik-Lernlabor")
@@ -38,6 +39,39 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native("elab", opts, Box::new(move |cc| Ok(Box::new(App::new(cc, script, file)))))
+}
+
+/// Ordner für automatische Sicherung und Absturzberichte: ~/.elab
+fn data_dir() -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    home.join(".elab")
+}
+
+fn autosave_path() -> PathBuf {
+    data_dir().join("letzte-sitzung.elab")
+}
+
+/// Schreibt bei einem Absturz einen Bericht nach ~/.elab/absturz.txt und zeigt eine Meldung,
+/// statt dass das Fenster kommentarlos verschwindet.
+fn install_crash_handler(dialog: bool) {
+    std::panic::set_hook(Box::new(move |info| {
+        let bt = std::backtrace::Backtrace::force_capture();
+        let report = format!("elab {} ist abgestürzt.\n\n{info}\n\nAblauf:\n{bt}", env!("CARGO_PKG_VERSION"));
+        let _ = std::fs::create_dir_all(data_dir());
+        let path = data_dir().join("absturz.txt");
+        let _ = std::fs::write(&path, &report);
+        eprintln!("{report}");
+        if dialog {
+            let _ = rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("elab – unerwarteter Fehler")
+                .set_description(format!(
+                    "Das Programm muss beendet werden.\n\n{info}\n\nBericht: {}\nDeine Schaltung wurde automatisch gesichert und lässt sich über „Beispiele → Letzte Sitzung“ wiederherstellen.",
+                    path.display()
+                ))
+                .show();
+        }
+    }));
 }
 
 const TIMEBASES: [(f64, &str); 9] = [
@@ -87,6 +121,9 @@ struct App {
     palette_digital: bool,
     /// Vom Testskript gedrückter Taster
     script_pressed: Option<u32>,
+    /// Zuletzt automatisch gesicherter Stand und Zeitpunkt
+    autosaved: Option<Document>,
+    autosave_due: f64,
 }
 
 impl App {
@@ -126,6 +163,8 @@ impl App {
             bottom_tab: panels::BottomTab::Scope,
             palette_digital: false,
             script_pressed: None,
+            autosaved: None,
+            autosave_due: 0.0,
         };
         if let Some(f) = file {
             app.open_path(f);
@@ -231,6 +270,25 @@ impl App {
         }
     }
 
+    /// Sichert den Schaltplan gut eine Sekunde nach der letzten Änderung nach ~/.elab.
+    fn autosave(&mut self, ctx: &egui::Context) {
+        if self.script.is_some() || self.autosaved.as_ref() == Some(&self.doc) {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        if self.autosave_due == 0.0 {
+            self.autosave_due = now + 1.5;
+        }
+        if now >= self.autosave_due {
+            let _ = std::fs::create_dir_all(data_dir());
+            let _ = std::fs::write(autosave_path(), self.doc.to_json());
+            self.autosaved = Some(self.doc.clone());
+            self.autosave_due = 0.0;
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(300));
+        }
+    }
+
     fn undo(&mut self) {
         if self.hist.undo(&mut self.doc) {
             self.ed.prune(&self.doc);
@@ -317,6 +375,19 @@ impl App {
                 self.save(false);
             }
             ui.menu_button(RichText::new("📚 Beispiele").size(15.0), |ui| {
+                if autosave_path().exists()
+                    && ui.button(RichText::new("↺ Letzte Sitzung").size(14.0)).on_hover_text("Automatisch gesicherter Stand").clicked()
+                {
+                    match std::fs::read_to_string(autosave_path()).map_err(|e| e.to_string()).and_then(|s| Document::from_json(&s)) {
+                        Ok(doc) => {
+                            self.replace_doc(doc);
+                            self.flash("Letzte Sitzung wiederhergestellt.".into(), GREEN);
+                        }
+                        Err(e) => self.flash(format!("Wiederherstellen fehlgeschlagen: {e}"), RED),
+                    }
+                    ui.close();
+                }
+                ui.separator();
                 for (k, ex) in examples::all().iter().enumerate() {
                     if ui.button(RichText::new(ex.title).size(14.0)).on_hover_text(ex.summary).clicked() {
                         self.load_example(k);
@@ -728,7 +799,7 @@ impl App {
                     ui.label(RichText::new("Pegel an den Anschlüssen").strong().color(BLUE));
                     let names = part.kind.pin_names();
                     ui.horizontal_wrapped(|ui| {
-                        for (k, &n) in nl.pin_nets[&id].iter().enumerate() {
+                        for (k, &n) in nl.pin_nets.get(&id).into_iter().flatten().enumerate() {
                             let v = ds.net(n);
                             ui.label(
                                 RichText::new(format!("{} = {}", names.get(k).unwrap_or(&"?"), v.symbol()))
@@ -1079,7 +1150,7 @@ impl App {
                     }
                     if let (Some(ds), Some(nl)) = (&self.dsim, &self.nl) {
                         if p.kind.is_digital() || matches!(p.kind, PartKind::Probe) {
-                            let v: String = nl.pin_nets[&p.id].iter().map(|&n| ds.net(n).symbol()).collect();
+                            let v: String = nl.pin_nets.get(&p.id).into_iter().flatten().map(|&n| ds.net(n).symbol()).collect();
                             logic.insert(p.name.clone(), json!(v));
                         }
                     }
@@ -1266,6 +1337,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title_sent = title;
         }
+        self.autosave(&ctx);
         self.run_script(&ctx);
     }
 }

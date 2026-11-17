@@ -340,7 +340,10 @@ impl Editor {
         }
 
         // --- Hover ---
-        if matches!(self.drag, Drag::None) {
+        // Nach einem Drop aus der Palette passt die Netzliste erst im nächsten Bild zum Schaltplan
+        if out.changed {
+            self.hover = Hover::None;
+        } else if matches!(self.drag, Drag::None) {
             self.hover = g.map_or(Hover::None, |g| self.hit(doc, g));
         }
 
@@ -906,7 +909,7 @@ impl Editor {
                     let pname = part.kind.pin_names().get(k).copied().unwrap_or("?");
                     let mut l = if part.kind.local_pins().len() == 1 { "Anschluss".to_string() } else { format!("Anschluss {pname}") };
                     if let Some(nl) = live.nl {
-                        let n = nl.pin_nets[&id][k];
+                        let Some(&n) = nl.pin_nets.get(&id).and_then(|v| v.get(k)) else { return };
                         l += &format!(" · Netz {}", nl.nets[n].name);
                         if let Some(v) = net_v(n) {
                             l += &format!(" · {}", fmt_si(v, "V"));
@@ -951,7 +954,7 @@ impl Editor {
                 }
                 if let PartKind::Probe = part.kind {
                     if let Some(nl) = live.nl {
-                        let n = nl.pin_nets[&id][0];
+                        let Some(&n) = nl.pin_nets.get(&id).and_then(|v| v.first()) else { return };
                         if let Some(v) = net_v(n) {
                             lines.push((format!("U = {} gegen Masse", fmt_si(v, "V")), ACCENT, false));
                         }
@@ -963,7 +966,8 @@ impl Editor {
                 if part.kind.is_digital() {
                     if let (Some(nl), Some(_)) = (live.nl, live.logic) {
                         let names = part.kind.pin_names();
-                        let vals: Vec<String> = nl.pin_nets[&id]
+                        let Some(pn) = nl.pin_nets.get(&id) else { return };
+                        let vals: Vec<String> = pn
                             .iter()
                             .enumerate()
                             .map(|(k, &n)| format!("{} = {}", names.get(k).unwrap_or(&"?"), live.logic_of(n).map_or("–", |l| l.symbol())))
@@ -979,7 +983,7 @@ impl Editor {
             }
             Hover::Wire(id) => {
                 let Some(nl) = live.nl else { return };
-                let n = nl.wire_net[&id];
+                let Some(&n) = nl.wire_net.get(&id) else { return };
                 lines.push((format!("Netz {}", nl.nets[n].name), Color32::WHITE, true));
                 if let Some(l) = live.logic_of(n) {
                     let what = match l {
