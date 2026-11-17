@@ -40,6 +40,15 @@ pub enum Topic {
     SevenSeg,
     Analyzer,
     TruthTable,
+    // Phase 3
+    Bjt,
+    Mosfet,
+    TransistorSwitch,
+    RealLogic,
+    Potentiometer,
+    PushButton,
+    Voltmeter,
+    Ammeter,
 }
 
 pub struct Doc {
@@ -77,12 +86,22 @@ impl Topic {
             PartKind::JkFlipFlop => Topic::JkFlipFlop,
             PartKind::Counter4 => Topic::Counter,
             PartKind::SevenSeg => Topic::SevenSeg,
+            PartKind::Transistor { kind } if kind.is_bjt() => Topic::Bjt,
+            PartKind::Transistor { .. } => Topic::Mosfet,
+            PartKind::Potentiometer { .. } => Topic::Potentiometer,
+            PartKind::PushButton => Topic::PushButton,
+            PartKind::Voltmeter => Topic::Voltmeter,
+            PartKind::Ammeter => Topic::Ammeter,
         }
     }
 
     /// Themen für das Inhaltsverzeichnis.
     pub const BASICS: [Topic; 9] =
         [Topic::Welcome, Topic::Editor, Topic::Nets, Topic::Ground, Topic::Ohm, Topic::Kirchhoff, Topic::OperatingPoint, Topic::Colors, Topic::Scope];
+
+    /// Themen zu Transistoren und Messgeräten.
+    pub const TRANSISTORS: [Topic; 7] =
+        [Topic::Bjt, Topic::Mosfet, Topic::TransistorSwitch, Topic::RealLogic, Topic::Potentiometer, Topic::Voltmeter, Topic::Ammeter];
 
     /// Themen der Digitaltechnik für das Inhaltsverzeichnis.
     pub const DIGITAL: [Topic; 10] = [
@@ -336,6 +355,103 @@ pub fn doc(t: Topic) -> Doc {
                       Darum zeigt der Simulator ihn als X.",
             watch: "Verbinde zwei Logikschalter mit demselben Draht und stelle sie unterschiedlich: Das Netz wird rot (Konflikt).",
             related: &[Gate(GateType::And), Analyzer, LogicInput],
+        },
+        Bjt => Doc {
+            title: "Bipolartransistor (NPN, PNP)",
+            what: "Ein kleiner Basisstrom steuert einen großen Kollektorstrom. Beim NPN-Transistor fließt der Hauptstrom von \
+                   Kollektor (C) zu Emitter (E), gesteuert vom Strom in die Basis (B). Die Basis-Emitter-Strecke ist eine Diode: \
+                   Erst ab etwa 0,6 V fließt Basisstrom.\n\n\
+                   Drei Betriebsbereiche: gesperrt (kein Basisstrom, Schalter aus), aktiv (I_C = β · I_B, Verstärker) und \
+                   gesättigt (so viel Basisstrom, dass der Transistor ganz durchschaltet, Schalter ein). Der PNP-Transistor \
+                   arbeitet spiegelbildlich: Der Emitter liegt an der Plusseite, der Pfeil zeigt hinein.",
+            math: "I_C = β · I_B          (aktiver Bereich)\nI_E = I_C + I_B\nU_BE ≈ 0,6 … 0,7 V     (Silizium)\nU_CE,sat ≈ 0,1 … 0,2 V (gesättigt)",
+            typical: "BC547: β ≈ 200 … 450, I_C bis 100 mA. 2N2222: bis 600 mA. BC557 ist das PNP-Gegenstück zum BC547.",
+            watch: "Fahre über den Transistor: Das Infofenster zeigt U_BE, U_CE, beide Ströme, I_C / I_B und den Betriebsbereich.",
+            related: &[TransistorSwitch, Mosfet, Diode],
+        },
+        Mosfet => Doc {
+            title: "MOSFET (N- und P-Kanal)",
+            what: "Beim Feldeffekttransistor steuert eine Spannung, kein Strom: Das Gate ist isoliert, im Gleichstromfall fließt \
+                   dort nichts. Ein N-Kanal-MOSFET leitet zwischen Drain (D) und Source (S), sobald U_GS über der Schwellspannung U_th liegt. \
+                   Ein P-Kanal-MOSFET leitet, wenn das Gate um mehr als U_th unter der Source liegt.\n\n\
+                   Das Substrat ist intern mit der Source verbunden (Pfeil). Weit durchgesteuert wirkt der MOSFET wie ein kleiner \
+                   Widerstand (linearer Bereich, Schalter ein), knapp über der Schwelle wie eine gesteuerte Stromquelle (Sättigung).",
+            math: "gesperrt:  U_GS < U_th        → I_D = 0\nlinear:    U_DS < U_GS − U_th → I_D = K·(2·(U_GS−U_th)·U_DS − U_DS²)\nSättigung: I_D = K · (U_GS − U_th)²",
+            typical: "2N7000: U_th ≈ 2 V, bis 200 mA. BS250 ist das P-Kanal-Gegenstück. Die CMOS-Logik-Typen haben U_th ≈ 1 V und \
+                      kleine Ströme, so wie die Transistoren in einem Logik-IC.",
+            watch: "Beispiel „CMOS-Inverter“: Dreh das Poti langsam und beobachte, wie N- und P-Kanal abwechselnd sperren.",
+            related: &[RealLogic, Bjt, TransistorSwitch],
+        },
+        TransistorSwitch => Doc {
+            title: "Transistor als Schalter",
+            what: "Mit einem Transistor schaltet ein kleines Signal (etwa ein Mikrocontroller-Pin) eine große Last. Der Basisstrom \
+                   wird mit einem Vorwiderstand so gewählt, dass der Transistor sicher gesättigt ist: etwa zwei- bis fünfmal mehr, \
+                   als I_C / β verlangen würde (Übersteuerung). Dann ist U_CE klein und der Transistor wird kaum warm.",
+            math: "I_B = k · I_C / β       (k ≈ 3)\nR_B = (U_ein − 0,7 V) / I_B\nBeispiel: 20 mA, β = 200, 5 V\n  I_B = 0,3 mA → R_B ≈ 14 kΩ → 10 kΩ",
+            typical: "Ein MOSFET braucht keinen Basisstrom. Wichtig ist nur, dass U_GS deutlich über U_th liegt: Ein 2N7000 schaltet \
+                      bei 5 V gut, bei 3,3 V (ESP32) nur knapp.",
+            watch: "Beispiel „Transistor als Schalter“: Taster drücken, beide Amperemeter vergleichen. Im gesättigten Zustand ist \
+                    I_C deutlich kleiner als β · I_B, der Transistor ist wie gewollt übersteuert.",
+            related: &[Bjt, Mosfet, PushButton],
+        },
+        RealLogic => Doc {
+            title: "Logikpegel in echter Hardware",
+            what: "In der Digital-Palette sind Pegel ideal 0 oder 1. In echter Hardware sind es Spannungen, und der Baustein entscheidet \
+                   anhand von Schwellen: Bei 5-V-CMOS gilt alles unter etwa 1,5 V sicher als 0 und alles über 3,5 V sicher als 1. \
+                   Dazwischen ist der Zustand undefiniert, beide Ausgangstransistoren leiten ein wenig, und es fließt Querstrom.\n\n\
+                   Der CMOS-Inverter zeigt den Aufbau jedes Logikgatters: Ein P-Kanal-MOSFET zieht den Ausgang nach oben, ein N-Kanal-MOSFET \
+                   nach unten. Im Ruhezustand sperrt immer einer von beiden, deshalb braucht CMOS fast keinen Strom.",
+            math: "5-V-CMOS (74HC):\n  0 sicher:  U_E ≤ 1,5 V\n  1 sicher:  U_E ≥ 3,5 V\n  Ausgang:   ≈ 0 V bzw. ≈ 5 V\n  Schwelle:  ≈ U_DD / 2\n3,3-V-Logik (ESP32): 0 bis ≈ 0,8 V, 1 ab ≈ 2,5 V",
+            typical: "Ein Ausgang, der nur 3,3 V liefert, ist für einen 5-V-CMOS-Eingang ein Grenzfall (unter 3,5 V). Dafür gibt es \
+                      Pegelwandler oder 74HCT-Bausteine mit TTL-Schwellen.",
+            watch: "Beispiel „CMOS-Inverter“: Stell das Poti langsam von 0 auf 100 % und lies die Voltmeter. Wo kippt der Ausgang, \
+                    und wie viel Querstrom zeigt das Amperemeter genau dort? Ausblick: In Phase 4 bekommen auch die Logikbausteine \
+                    Versorgungsanschlüsse und echte Schaltschwellen.",
+            related: &[Mosfet, Logic, Voltmeter],
+        },
+        Potentiometer => Doc {
+            title: "Potentiometer",
+            what: "Ein einstellbarer Spannungsteiler: Der Schleifer S greift den Widerstand zwischen A und B an einer wählbaren \
+                   Stelle ab. Die Stellung gibt an, welcher Anteil des Widerstands zwischen S und B liegt. Mit B an Masse und A an der \
+                   Versorgung liefert 70 % also 70 % der Spannung.",
+            math: "R_SB = R · s,  R_AS = R · (1 − s)\nunbelastet:  U_SB = U_AB · s",
+            typical: "Lautstärkeregler, Sollwertgeber, Einstellen von Schaltschwellen. Üblich sind 1 kΩ … 1 MΩ. Verstellen: Schieberegler \
+                      im Inspektor oder bei ausgewähltem Poti die Pfeiltasten (⇧ für feine Schritte).",
+            watch: "Belaste den Schleifer mit einem kleinen Widerstand gegen Masse: Die Spannung bricht ein, weil ein Teil des Stroms \
+                    durch die Last statt durch R_SB fließt.",
+            related: &[Resistor, Voltmeter, RealLogic],
+        },
+        PushButton => Doc {
+            title: "Taster",
+            what: "Ein Schließer, der nur leitet, solange er gedrückt ist. Halte die Maustaste auf dem Taster gedrückt. Anders als der \
+                   Schalter rastet er nicht ein.",
+            math: "gedrückt:    R = 1 mΩ\nlosgelassen: offen",
+            typical: "Klingeltaster, Tastaturen, Reset-Knöpfe. Am Logikeingang braucht ein Taster einen Pull-down- oder Pull-up-Widerstand, \
+                      sonst liegt der Eingang im losgelassenen Zustand offen.",
+            watch: "Beispiel „NAND-Gatter aus Transistoren“: Die Taster legen die Eingänge auf 5 V, die 100-kΩ-Widerstände ziehen sie \
+                    sonst auf 0 V.",
+            related: &[Switch, TransistorSwitch],
+        },
+        Voltmeter => Doc {
+            title: "Voltmeter",
+            what: "Misst die Spannung zwischen seinem Plus- und Minusanschluss. Ein Voltmeter wird parallel zu dem Bauteil angeschlossen, \
+                   dessen Spannung du wissen willst. Das ideale Voltmeter hat einen unendlichen Innenwiderstand, es belastet die \
+                   Schaltung also nicht.",
+            math: "U = φ(+) − φ(−)\nparallel anschließen",
+            typical: "Echte Digitalmultimeter haben etwa 10 MΩ Innenwiderstand. An hochohmigen Schaltungen verfälscht das die Messung.",
+            watch: "Vertausche Plus und Minus: Das Vorzeichen der Anzeige kehrt sich um.",
+            related: &[Ammeter, Probe, Kirchhoff],
+        },
+        Ammeter => Doc {
+            title: "Amperemeter",
+            what: "Misst den Strom, der durch das Gerät fließt. Dafür muss es in Reihe in die Leitung: Setzt du es auf eine Leitung, \
+                   wird es automatisch eingefügt. Das ideale Amperemeter hat 0 Ω Innenwiderstand.\n\n\
+                   Ein Amperemeter parallel zu einer Spannungsquelle ist ein Kurzschluss: Die Anzeige meldet ÜBERLAST. Ein echtes \
+                   Gerät würde dabei seine Sicherung auslösen.",
+            math: "I positiv, wenn er von + nach − durch das Gerät fließt\nin Reihe anschließen",
+            typical: "Multimeter haben getrennte Buchsen für mA und 10 A. Messbereich vor dem Messen passend wählen.",
+            watch: "Miss den Strom vor und hinter einem Bauteil: Er ist gleich (Knotenregel).",
+            related: &[Voltmeter, Kirchhoff, Ohm],
         },
         Gate(g) => gate_doc(g),
         LogicInput => Doc {

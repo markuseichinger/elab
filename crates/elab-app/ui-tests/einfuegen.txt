@@ -30,9 +30,9 @@ wait 3
 shot ui-out/e_ghost.ppm
 click 16 -6
 # Drag & Drop aus der Palette: Spule auf die rechte Leitung (dreht sich automatisch)
-dragpx 195 259 20 0
+paldrag Spule 20 0
 # Schalter auf die untere Leitung
-dragpx 44 419 15 6
+paldrag Schalter 15 6
 wait 3
 dump ui-out/e_open.json
 # Schalter schließen

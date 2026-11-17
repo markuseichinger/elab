@@ -8,7 +8,7 @@
 //!
 //! Befehle (eine Zeile je Befehl, `#` für Kommentare; Koordinaten in Rasterpunkten):
 //! `example N`, `tool select|wire|<Bauteil>`, `move X Y`, `click X Y`, `shiftclick X Y`,
-//! `dblclick X Y`, `clickpx X Y`, `type TEXT`, `drag X1 Y1 X2 Y2`, `key NAME`, `cmd NAME`, `cmdshift NAME`,
+//! `dblclick X Y`, `clickpx X Y`, `type TEXT`, `drag X1 Y1 X2 Y2`, `paldrag BAUTEIL X Y`, `key NAME`, `cmd NAME`, `cmdshift NAME`,
 //! `select NAME`, `scope on|off`, `tutorial on|off`, `timebase SEKUNDEN`, `fit`,
 //! `advance SEKUNDEN`, `hold X Y`, `release`, `panel scope|analyzer|truth`, `palette analog|digital`,
 //! `pause on|off`, `wait N`, `shot DATEI.ppm`, `dump DATEI.json`, `quit`.
@@ -26,6 +26,8 @@ pub enum Cmd {
     ClickPx(f32, f32),
     /// Ziehen von Bildschirmkoordinaten auf einen Rasterpunkt (z. B. aus der Palette)
     DragPxGrid(f32, f32, f32, f32),
+    /// Bauteil per Name aus der Palette auf einen Rasterpunkt ziehen
+    PalDrag(String, f32, f32),
     /// Text eintippen und mit Enter bestätigen
     Type(String),
     DblClick(f32, f32),
@@ -76,6 +78,14 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
             "dblclick" => Cmd::DblClick(f(1)?, f(2)?),
             "clickpx" => Cmd::ClickPx(f(1)?, f(2)?),
             "dragpx" => Cmd::DragPxGrid(f(1)?, f(2)?, f(3)?, f(4)?),
+            "paldrag" => {
+                // Name darf Leerzeichen enthalten: die letzten beiden Wörter sind die Koordinaten
+                let n = t.len();
+                if n < 4 {
+                    return Err(format!("Zeile {}: paldrag NAME X Y", ln + 1));
+                }
+                Cmd::PalDrag(t[1..n - 2].join(" "), f(n - 2)?, f(n - 1)?)
+            }
             "type" => Cmd::Type(line.split_once(' ').map_or("", |x| x.1).to_string()),
             "drag" => Cmd::Drag(f(1)?, f(2)?, f(3)?, f(4)?),
             "key" => Cmd::Key(key(1)?, Modifiers::NONE),

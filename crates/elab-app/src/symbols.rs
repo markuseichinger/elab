@@ -76,7 +76,7 @@ impl Pen<'_> {
         self.painter.circle_filled(self.pt(c.0, c.1), r * self.s, fill);
     }
 
-    fn arrow_head(&self, tip: (f32, f32), dir: (f32, f32), len: f32) {
+    pub fn arrow_head(&self, tip: (f32, f32), dir: (f32, f32), len: f32) {
         let n = (dir.0 * dir.0 + dir.1 * dir.1).sqrt().max(1e-6);
         let (dx, dy) = (dir.0 / n, dir.1 / n);
         let (px, py) = (-dy, dx);
@@ -225,6 +225,75 @@ pub fn draw(pen: &Pen, kind: &PartKind, live: Live) {
         }
         PartKind::Probe => {
             pen.disc((0.0, 0.0), 0.18, pen.color);
+        }
+        PartKind::Transistor { kind } => {
+            use elab_app::model::TransistorFamily as F;
+            let fam = kind.family();
+            // PNP und P-Kanal: an der Waagerechten gespiegelt (Emitter/Source oben)
+            let fy = if matches!(fam, F::Pnp | F::Pmos) { -1.0 } else { 1.0 };
+            let m = |x: f32, y: f32| (x, y * fy);
+            pen.disc((0.2, 0.0), 1.35, body_fill);
+            pen.circle((0.2, 0.0), 1.35);
+            if kind.is_bjt() {
+                pen.line((-2.0, 0.0), (-0.45, 0.0));
+                pen.thick((-0.45, -0.85), (-0.45, 0.85), 1.8);
+                pen.line(m(-0.45, -0.4), m(1.0, -1.2));
+                pen.line(m(1.0, -1.2), m(1.0, -2.0));
+                pen.line(m(-0.45, 0.4), m(1.0, 1.2));
+                pen.line(m(1.0, 1.2), m(1.0, 2.0));
+                if fam == F::Npn {
+                    pen.arrow_head(m(0.85, 1.12), m(1.45, 0.8), 0.42);
+                } else {
+                    pen.arrow_head(m(0.05, 0.73), m(-1.45, -0.8), 0.42);
+                }
+            } else {
+                pen.line((-2.0, 0.0), (-0.65, 0.0));
+                pen.thick((-0.65, -0.8), (-0.65, 0.8), 1.3);
+                for (a, b) in [(-0.9, -0.45), (-0.2, 0.2), (0.45, 0.9)] {
+                    pen.thick((-0.3, a), (-0.3, b), 1.6);
+                }
+                pen.line(m(-0.3, -0.7), m(1.0, -0.7));
+                pen.line(m(1.0, -0.7), m(1.0, -2.0));
+                pen.line(m(-0.3, 0.7), m(1.0, 0.7));
+                pen.line(m(1.0, 0.7), m(1.0, 2.0));
+                pen.line((-0.3, 0.0), (1.0, 0.0));
+                pen.line(m(1.0, 0.0), m(1.0, 0.7));
+                if fam == F::Nmos {
+                    pen.arrow_head((-0.25, 0.0), (-1.0, 0.0), 0.38);
+                } else {
+                    pen.arrow_head((0.75, 0.0), (1.0, 0.0), 0.38);
+                }
+            }
+        }
+        PartKind::Potentiometer { pos, .. } => {
+            pen.line((-2.0, 0.0), (-1.0, 0.0));
+            pen.line((1.0, 0.0), (2.0, 0.0));
+            let r = [(-1.0, -0.4), (1.0, -0.4), (1.0, 0.4), (-1.0, 0.4)];
+            pen.fill(&r, body_fill);
+            pen.poly(&r, true);
+            let xw = 0.8 - 1.6 * pos.clamp(0.0, 1.0) as f32; // 100 % = Schleifer bei A (links)
+            pen.line((0.0, -2.0), (0.0, -1.2));
+            pen.line((0.0, -1.2), (xw, -1.2));
+            pen.line((xw, -1.2), (xw, -0.75));
+            pen.arrow_head((xw, -0.45), (0.0, 1.0), 0.35);
+        }
+        PartKind::PushButton => {
+            pen.line((-2.0, 0.0), (-1.0, 0.0));
+            pen.line((1.0, 0.0), (2.0, 0.0));
+            pen.disc((-1.0, 0.0), 0.12, pen.color);
+            pen.disc((1.0, 0.0), 0.12, pen.color);
+            let y = if live.pressed { -0.14 } else { -0.6 };
+            pen.thick((-1.1, y), (1.1, y), 1.3);
+            pen.line((0.0, y), (0.0, -1.3));
+            pen.thick((-0.45, -1.3), (0.45, -1.3), 1.4);
+        }
+        PartKind::Voltmeter | PartKind::Ammeter => {
+            pen.line((-2.0, 0.0), (-0.9, 0.0));
+            pen.line((0.9, 0.0), (2.0, 0.0));
+            pen.disc((0.0, 0.0), 0.9, body_fill);
+            pen.circle((0.0, 0.0), 0.9);
+            pen.text((0.0, 0.0), if matches!(kind, PartKind::Voltmeter) { "V" } else { "A" }, 0.95, pen.color);
+            plus(pen, (-1.45, -0.45));
         }
         _ => draw_digital(pen, kind, &live),
     }

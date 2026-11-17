@@ -7,8 +7,10 @@ Elektronik in Rust, als Gegenstück zu [nnlab](https://github.com/markuseichinge
 
 ![Digitaltechnik: Zähler mit 7-Segment-Anzeige und Logikanalysator](docs/screenshot_digital.png)
 
-> **Stand: Phase 2** – Analog- und Digitaltechnik: Schaltplan-Editor mit Live-Simulation,
-> Oszilloskop, Logikanalysator, Wahrheitstabelle und Tutorial.
+![CMOS-Inverter aus zwei MOSFETs: echte Logikpegel mit Poti, Volt- und Amperemeter](docs/screenshot_transistor.png)
+
+> **Stand: Phase 3** – Analog- und Digitaltechnik mit Transistoren und Messgeräten:
+> Schaltplan-Editor mit Live-Simulation, Oszilloskop, Logikanalysator, Wahrheitstabelle und Tutorial.
 
 ## Starten
 
@@ -45,14 +47,22 @@ cargo test --workspace              # alle Tests (Simulator, Netzliste, Modell)
   Drähte zeigen ihren Pegel farbig, Schalter per Klick, Taster per Gedrückthalten.
 - **Logikanalysator** mit Zeitlupe und Pause, **Wahrheitstabelle** für Schaltnetze
   (aktuelle Zeile markiert, Klick auf eine Zeile stellt die Schalter ein).
-- **Undo/Redo** für jede Änderung, **Speichern/Laden** als `.elab` (JSON),
-  **elf Beispielschaltungen** (sechs analog, fünf digital).
+- **Transistoren** (NPN, PNP, N- und P-Kanal-MOSFET) mit Anzeige des Betriebsbereichs
+  (gesperrt, aktiv/Sättigung, gesättigt/linear), U_BE, U_CE, I_B, I_C und Stromverstärkung.
+  Damit lassen sich Logikgatter aus echten Bauteilen bauen und Logikpegel als Spannungen erleben.
+- **Messgeräte:** Voltmeter (parallel, belastet nicht) und Amperemeter (in Reihe, wird auf
+  Leitungen automatisch eingefügt) mit LCD-Anzeige; Potentiometer (Schieberegler, Pfeiltasten);
+  Taster (gedrückt halten).
+- **Undo/Redo** für jede Änderung, **Speichern/Laden** als `.elab` (JSON), automatische
+  Sicherung (`~/.elab/letzte-sitzung.elab`, wiederherstellbar über „Beispiele“),
+  **15 Beispielschaltungen** (sechs analog, vier mit Transistoren, fünf digital).
 
 ### Bauteile
 
-**Analog:** Gleich-, Wechsel- und Rechteckspannung, Stromquelle, Widerstand, Kondensator,
-Spule, Glühlampe, Diode (1N4148, 1N4007, Lehrbuch), LED (rot, gelb, grün, blau, weiß),
-Schalter, Masse, Messpunkt.
+**Analog:** Gleich-, Wechsel- und Rechteckspannung, Stromquelle, Widerstand, Potentiometer,
+Kondensator, Spule, Glühlampe, Diode (1N4148, 1N4007, Lehrbuch), LED (rot, gelb, grün, blau, weiß),
+Transistoren (BC547, 2N2222, BC557, 2N7000, BS250, CMOS-Logik-N/P), Schalter, Taster, Masse,
+Messpunkt, Voltmeter, Amperemeter.
 
 **Digital:** UND, ODER, NICHT, NAND, NOR, XOR, XNOR, Logikschalter, Taster, Taktgeber,
 fester Pegel 1, Logik-Anzeige, 7-Segment-Anzeige (hex), D-Flipflop, JK-Flipflop,
@@ -83,6 +93,7 @@ elab/
 │   ├── src/circuit.rs    Schaltungsmodell und Fehlermeldungen
 │   ├── src/diode.rs      Shockley-Modell mit pn-Spannungsbegrenzung
 │   ├── src/digital.rs    Ereignisgesteuerte Logiksimulation (0/1/X/Z, Laufzeiten)
+│   ├── src/transistor.rs Ebers-Moll (BJT) und Shichman-Hodges (MOSFET)
 │   ├── src/waveform.rs   DC, Sinus, Puls/Rechteck, stückweise linear
 │   └── tests/            Referenztests gegen analytische Lösungen
 └── crates/elab-app/      Oberfläche (egui/eframe 0.37, wie nnlab)
@@ -108,11 +119,15 @@ eingespielt, Screenshots und der Dokumentzustand werden gespeichert:
 cargo run --release -- --script crates/elab-app/ui-tests/schaltung_bauen.txt
 cargo run --release -- --script crates/elab-app/ui-tests/einfuegen.txt
 cargo run --release -- --script crates/elab-app/ui-tests/digital_bauen.txt
+cargo run --release -- --script crates/elab-app/ui-tests/transistor_bauen.txt
 ```
 
 - `schaltung_bauen`: LED-Schaltung von Grund auf, Verdrahten, Verschieben, Drehen, Undo
 - `einfuegen`: Bauteile per Klick und Drag & Drop in Leitungen einfügen, Leitung verlängern
 - `digital_bauen`: Gatterschaltung bauen, schalten, Buskonflikt, Analog/Digital-Mischung
+- `transistor_bauen`: Transistorschalter per Drag & Drop, Taster gedrückt halten
+- `zufallstest.py`: erzeugt Skripte mit vielen zufälligen schnellen Aktionen über alle Bauteile
+  (`python3 crates/elab-app/ui-tests/zufallstest.py 1 150 > /tmp/z.txt`)
 
 Befehle: siehe `src/script.rs`.
 
@@ -123,7 +138,7 @@ Befehle: siehe `src/script.rs`.
 | **0** ✅ | Analogkern + Referenztests |
 | **1** ✅ | Schaltplan-Editor, Live-Arbeitspunkt, Tutorial, Oszilloskop, Speichern/Laden |
 | **2** ✅ | Digital-Engine (0/1/X/Z, ereignisgesteuert), Gatter, Flipflops, Zähler, Logikanalysator, Wahrheitstabelle |
-| 3 | Transistoren (BJT, MOSFET), Multimeter, Poti und Taster |
-| 4 | Mixed-Signal-Brücke, OpAmp, 555, ADC/DAC, eigene ICs |
+| **3** ✅ | Transistoren (BJT, MOSFET), Volt- und Amperemeter, Poti, Taster, Gatter aus Transistoren |
+| 4 | Mixed-Signal: Logik-ICs mit Versorgungsanschlüssen und echten Schaltschwellen (74HC/74HCT), OpAmp, 555, ADC/DAC, eigene ICs |
 | 5 | Stromfluss-Animation, Echtzeit-Simulation, Kennlinien, Lektionen mit Aufgabenprüfung |
 | 6 | Politur, macOS-Bundle |

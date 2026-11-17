@@ -1,6 +1,6 @@
 //! Mitgelieferte Beispielschaltungen.
 
-use crate::model::{DiodeType, Document, GateType as G, LedColor, PartKind as K, P};
+use crate::model::{DiodeType, Document, GateType as G, LedColor, PartKind as K, TransistorType as T, P};
 
 /// Eine Beispielschaltung mit Beschreibung und passender Oszilloskop-Zeitbasis.
 pub struct Example {
@@ -150,6 +150,135 @@ pub fn all() -> Vec<Example> {
                 .wire(&[(10, 2), (10, 6)])
                 .done(),
         },
+        // ---------------- Transistoren und Messen ----------------
+        Example {
+            title: "Transistor als Schalter",
+            summary: "Halte den Taster gedrückt: Ein kleiner Basisstrom (I_B) schaltet den 25-mal größeren LED-Strom (I_C).",
+            scope_t: 10e-3,
+            digital: false,
+            doc: B::new("Transistor als Schalter")
+                .part(K::DcVoltage { v: 9.0 }, 0, 0, 0)
+                .part(K::Ground, 8, 8, 0)
+                .named(K::PushButton, 4, -5, 1, "S1")
+                .named(K::Resistor { r: 10e3 }, 4, -1, 1, "R_B")
+                .named(K::Ammeter, 8, 6, 0, "I_B")
+                .named(K::Resistor { r: 330.0 }, 16, -6, 1, "R_C")
+                .part(K::Led { color: LedColor::Rot }, 16, -2, 1)
+                .named(K::Ammeter, 16, 2, 1, "I_C")
+                .named(K::Transistor { kind: T::Bc547 }, 15, 6, 0, "T1")
+                .wire(&[(0, -2), (0, -8), (16, -8)])
+                .wire(&[(0, 2), (0, 8), (16, 8)])
+                .wire(&[(4, -8), (4, -7)])
+                .wire(&[(4, 1), (4, 6), (6, 6)])
+                .wire(&[(10, 6), (13, 6)])
+                .done(),
+        },
+        Example {
+            title: "CMOS-Inverter: echte Logikpegel",
+            summary: "Ein NICHT-Gatter aus zwei MOSFETs. Stell das Poti von 0 bis 100 %: Wo kippt der Ausgang, wann fließt Querstrom?",
+            scope_t: 10e-3,
+            digital: false,
+            doc: B::new("CMOS-Inverter")
+                .part(K::DcVoltage { v: 5.0 }, -4, 0, 0)
+                .part(K::Ground, 2, 8, 0)
+                .named(K::Potentiometer { r: 10e3, pos: 0.2 }, 6, 0, 1, "P1")
+                .named(K::Transistor { kind: T::CmosP }, 14, -3, 0, "TP")
+                .named(K::Transistor { kind: T::CmosN }, 14, 3, 0, "TN")
+                .named(K::Ammeter, 15, -7, 1, "I_quer")
+                .named(K::Voltmeter, 8, 5, 1, "U_ein")
+                .named(K::Voltmeter, 23, 4, 1, "U_aus")
+                .wire(&[(-4, -2), (-4, -10), (15, -10), (15, -9)])
+                .wire(&[(-4, 2), (-4, 8), (23, 8)])
+                .wire(&[(6, -10), (6, -2)])
+                .wire(&[(6, 2), (6, 8)])
+                .wire(&[(8, 0), (10, 0)])
+                .wire(&[(10, -3), (10, 3)])
+                .wire(&[(10, -3), (12, -3)])
+                .wire(&[(10, 3), (12, 3)])
+                .wire(&[(15, -1), (15, 1)])
+                .wire(&[(15, 5), (15, 8)])
+                .wire(&[(8, 0), (8, 3)])
+                .wire(&[(8, 7), (8, 8)])
+                .wire(&[(15, 0), (23, 0), (23, 2)])
+                .wire(&[(23, 6), (23, 8)])
+                .done(),
+        },
+        Example {
+            title: "NAND-Gatter aus Transistoren",
+            summary: "Vier MOSFETs bilden ein NAND: Nur wenn A und B auf 5 V liegen, zieht die Reihenschaltung unten den Ausgang auf 0 V. Schalter per Doppelklick.",
+            scope_t: 10e-3,
+            digital: false,
+            doc: B::new("NAND aus Transistoren")
+                .part(K::DcVoltage { v: 5.0 }, 0, 0, 0)
+                .part(K::Ground, 2, 10, 0)
+                .named(K::Switch { closed: false }, 4, -7, 1, "A")
+                .named(K::Switch { closed: false }, 10, -7, 1, "B")
+                .named(K::Resistor { r: 100e3 }, 4, 5, 1, "R_A")
+                .named(K::Resistor { r: 100e3 }, 10, 5, 1, "R_B")
+                .named(K::Transistor { kind: T::CmosP }, 16, -6, 0, "P1")
+                .named(K::Transistor { kind: T::CmosP }, 24, -6, 0, "P2")
+                .named(K::Transistor { kind: T::CmosN }, 24, 1, 0, "N1")
+                .named(K::Transistor { kind: T::CmosN }, 24, 6, 0, "N2")
+                .named(K::Voltmeter, 29, 2, 1, "U_Y")
+                .wire(&[(0, -2), (0, -10), (25, -10)])
+                .wire(&[(0, 2), (0, 10), (29, 10)])
+                .wire(&[(4, -10), (4, -9)])
+                .wire(&[(10, -10), (10, -9)])
+                .wire(&[(4, -5), (4, 3)])
+                .wire(&[(10, -5), (10, 3)])
+                .wire(&[(4, 7), (4, 10)])
+                .wire(&[(10, 7), (10, 10)])
+                .wire(&[(17, -8), (17, -10)])
+                .wire(&[(25, -8), (25, -10)])
+                .wire(&[(17, -4), (17, -2), (25, -2)])
+                .wire(&[(25, -4), (25, -2)])
+                .wire(&[(25, -2), (25, -1)])
+                .wire(&[(25, 3), (25, 4)])
+                .wire(&[(25, 8), (25, 10)])
+                .wire(&[(4, -3), (12, -3)])
+                .wire(&[(12, -6), (12, 1)])
+                .wire(&[(12, -6), (14, -6)])
+                .wire(&[(12, 1), (22, 1)])
+                .wire(&[(10, 2), (21, 2)])
+                .wire(&[(21, -6), (21, 6)])
+                .wire(&[(21, -6), (22, -6)])
+                .wire(&[(21, 6), (22, 6)])
+                .wire(&[(25, -2), (29, -2), (29, 0)])
+                .wire(&[(29, 4), (29, 10)])
+                .done(),
+        },
+        Example {
+            title: "Emitterschaltung (Verstärker)",
+            summary: "Ein Transistor verstärkt 0,5 V Wechselspannung etwa 4,6-fach und dreht die Phase um. Verstärkung ≈ R_C / R_E.",
+            scope_t: 3e-3,
+            digital: false,
+            doc: B::new("Emitterschaltung")
+                .part(K::DcVoltage { v: 12.0 }, 0, 0, 0)
+                .part(K::Ground, 8, 10, 0)
+                .named(K::AcVoltage { amp: 0.5, freq: 1000.0, offset: 0.0 }, 4, 4, 0, "Signal")
+                .named(K::Capacitor { c: 10e-6 }, 8, -3, 0, "C1")
+                .named(K::Resistor { r: 47e3 }, 12, -7, 1, "R1")
+                .named(K::Resistor { r: 10e3 }, 12, 5, 1, "R2")
+                .named(K::Resistor { r: 4.7e3 }, 17, -6, 1, "R_C")
+                .named(K::Resistor { r: 1e3 }, 17, 6, 1, "R_E")
+                .named(K::Transistor { kind: T::Bc547 }, 16, 0, 0, "T1")
+                .named(K::Probe, 4, 1, 0, "Eingang")
+                .named(K::Probe, 17, -3, 0, "Ausgang")
+                .wire(&[(0, -2), (0, -10), (17, -10)])
+                .wire(&[(0, 2), (0, 10), (17, 10)])
+                .wire(&[(4, 6), (4, 10)])
+                .wire(&[(4, 2), (4, -3), (6, -3)])
+                .wire(&[(10, -3), (12, -3)])
+                .wire(&[(12, 0), (14, 0)])
+                .wire(&[(12, -10), (12, -9)])
+                .wire(&[(12, -5), (12, 3)])
+                .wire(&[(12, 7), (12, 10)])
+                .wire(&[(17, -10), (17, -8)])
+                .wire(&[(17, -4), (17, -2)])
+                .wire(&[(17, 2), (17, 4)])
+                .wire(&[(17, 8), (17, 10)])
+                .done(),
+        },
         // ---------------- Digitaltechnik ----------------
         Example {
             title: "Logikgatter UND, ODER, XOR",
@@ -288,6 +417,78 @@ mod tests {
             let scope = sim::record(&ex.doc, &nl, ex.scope_t).unwrap_or_else(|e| panic!("{}: {e}", ex.title));
             assert_eq!(scope.traces.len(), sim::probes(&ex.doc).len(), "{}", ex.title);
         }
+    }
+
+    #[test]
+    fn transistor_examples_behave() {
+        use crate::model::PartKind;
+        use std::collections::HashSet;
+        let all = super::all();
+        let find = |t: &str| all.iter().find(|e| e.title.starts_with(t)).unwrap();
+        let val = |doc: &crate::model::Document, op: &sim::OpView, name: &str| op.parts[&doc.part_by_name(name).unwrap().id];
+
+        // Transistor als Schalter: aus ohne Taster, gesättigt mit Taster
+        let ex = find("Transistor als Schalter");
+        let nl = netlist::build(&ex.doc);
+        assert!(nl.error.is_none() && nl.excluded.is_empty() && nl.bridged.is_empty(), "{:?} {:?}", nl.error, nl.excluded);
+        let op = sim::operating_point(&nl).unwrap();
+        assert!(val(&ex.doc, &op, "I_C").i.abs() < 1e-6, "aus: I_C = {}", val(&ex.doc, &op, "I_C").i);
+        let s1 = ex.doc.part_by_name("S1").unwrap().id;
+        let nl = netlist::build_with(&ex.doc, &HashSet::from([s1]));
+        let op = sim::operating_point(&nl).unwrap();
+        let (ib, ic) = (val(&ex.doc, &op, "I_B").i, val(&ex.doc, &op, "I_C").i);
+        assert!(ib > 0.7e-3 && ib < 0.9e-3, "I_B = {ib}");
+        assert!(ic > 0.018 && ic < 0.024, "I_C = {ic}");
+        assert_eq!(val(&ex.doc, &op, "T1").region, Some(sim::Region::On), "gesättigt");
+
+        // CMOS-Inverter: Kennlinie über das Poti
+        let ex = find("CMOS-Inverter");
+        let at = |pos: f64| {
+            let mut d = ex.doc.clone();
+            let id = d.part_by_name("P1").unwrap().id;
+            d.part_mut(id).unwrap().kind = PartKind::Potentiometer { r: 10e3, pos };
+            let nl = netlist::build(&d);
+            assert!(nl.error.is_none() && nl.excluded.is_empty(), "{:?}", nl.error);
+            let op = sim::operating_point(&nl).unwrap();
+            (val(&d, &op, "U_ein").u, val(&d, &op, "U_aus").u, val(&d, &op, "I_quer").i)
+        };
+        let (ue, ua, iq) = at(0.1);
+        assert!((ue - 0.5).abs() < 0.01 && ua > 4.99 && iq.abs() < 1e-6, "Eingang 0: {ue} → {ua}, {iq}");
+        let (ue, ua, _) = at(0.9);
+        assert!((ue - 4.5).abs() < 0.01 && ua < 0.01, "Eingang 1: {ue} → {ua}");
+        let (_, ua, iq) = at(0.5);
+        assert!((ua - 2.5).abs() < 0.3 && iq > 1e-4, "Schwelle: {ua}, Querstrom {iq}");
+
+        // NAND: nur A = B = 1 gibt 0
+        let ex = find("NAND-Gatter aus Transistoren");
+        for (a, b, high) in [(false, false, true), (true, false, true), (false, true, true), (true, true, false)] {
+            let mut d = ex.doc.clone();
+            for (n, on) in [("A", a), ("B", b)] {
+                let id = d.part_by_name(n).unwrap().id;
+                d.part_mut(id).unwrap().kind = PartKind::Switch { closed: on };
+            }
+            let nl = netlist::build(&d);
+            assert!(nl.error.is_none() && nl.excluded.is_empty() && nl.bridged.is_empty(), "{:?}", nl.error);
+            let y = val(&d, &sim::operating_point(&nl).unwrap(), "U_Y").u;
+            assert_eq!(y > 4.5, high, "A={a} B={b}: U_Y = {y}");
+            assert!(!(0.5..=4.5).contains(&y), "sauberer Pegel: {y}");
+        }
+
+        // Emitterschaltung: Arbeitspunkt und Verstärkung
+        let ex = find("Emitterschaltung");
+        let nl = netlist::build(&ex.doc);
+        let op = sim::operating_point(&nl).unwrap();
+        let t1 = val(&ex.doc, &op, "T1");
+        assert_eq!(t1.region, Some(sim::Region::Active));
+        assert!(t1.i > 1.2e-3 && t1.i < 1.6e-3, "I_C = {}", t1.i);
+        let sc = sim::record(&ex.doc, &nl, 3e-3).unwrap();
+        let swing = |name: &str| {
+            let tr = sc.traces.iter().find(|t| t.name == name).unwrap();
+            let v: Vec<f64> = tr.pts.iter().filter(|p| p[0] > 1e-3).map(|p| p[1]).collect();
+            v.iter().cloned().fold(f64::MIN, f64::max) - v.iter().cloned().fold(f64::MAX, f64::min)
+        };
+        let gain = swing("Ausgang") / swing("Eingang");
+        assert!(gain > 4.0 && gain < 5.0, "Verstärkung {gain}");
     }
 
     #[test]

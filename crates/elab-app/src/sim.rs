@@ -1,13 +1,17 @@
 //! Anbindung an den Simulationskern: Arbeitspunkt live, Zeitverlauf fürs Oszilloskop.
 
 use crate::model::{Document, PartKind};
-use crate::netlist::Netlist;
+use crate::netlist::{Netlist, SimRole};
 use elab_sim::digital::{CompKind, DigitalSim, Logic};
 use elab_sim::{Simulator, TranOptions};
 use std::collections::HashMap;
 use std::time::Instant;
 
 /// Messwerte eines Bauteils.
+///
+/// Bei Transistoren sind die Werte auf die Durchlassrichtung bezogen (bei PNP und
+/// P-Kanal also mit umgekehrtem Vorzeichen), damit im Normalbetrieb positive Zahlen stehen:
+/// `u` = U_CE bzw. U_DS, `i` = I_C bzw. I_D, `ctrl_u` = U_BE bzw. U_GS, `ctrl_i` = I_B.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PartValues {
     /// Spannung erster minus zweiter Anschluss in V
@@ -16,6 +20,35 @@ pub struct PartValues {
     pub i: f64,
     /// Leistung in W: aufgenommen (passiv) bzw. abgegeben (Quelle)
     pub p: f64,
+    /// Steuerspannung (Transistor) bzw. U_SB (Potentiometer)
+    pub ctrl_u: f64,
+    /// Steuerstrom (Transistor) bzw. Schleiferstrom (Potentiometer)
+    pub ctrl_i: f64,
+    /// Betriebsbereich eines Transistors
+    pub region: Option<Region>,
+}
+
+/// Betriebsbereich eines Transistors in Lernbegriffen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Region {
+    /// gesperrt: Schalter aus
+    Off,
+    /// aktiv / Sättigung beim MOSFET: Verstärker, Strom wird gesteuert
+    Active,
+    /// gesättigt / linearer Bereich beim MOSFET: Schalter ein
+    On,
+}
+
+impl Region {
+    pub fn text(self, bjt: bool) -> &'static str {
+        match (self, bjt) {
+            (Region::Off, _) => "gesperrt (Schalter aus)",
+            (Region::Active, true) => "aktiv: verstärkt (I_C = β · I_B)",
+            (Region::Active, false) => "Sättigung: Strom durch U_GS gesteuert",
+            (Region::On, true) => "gesättigt (Schalter ein)",
+            (Region::On, false) => "linearer Bereich (Schalter ein)",
+        }
+    }
 }
 
 /// Ergebnis des DC-Arbeitspunkts, aufbereitet für die Anzeige.
@@ -42,7 +75,7 @@ pub fn operating_point(nl: &Netlist) -> Result<OpView, String> {
     let t0 = Instant::now();
     let mut sim = Simulator::new(&nl.circuit).map_err(|e| e.to_string())?;
     let op = sim.operating_point().map_err(|e| e.to_string())?;
-    let net_v = nl
+    let net_v: Vec<Option<f64>> = nl
         .nets
         .iter()
         .map(|n| {
@@ -55,15 +88,61 @@ pub fn operating_point(nl: &Netlist) -> Result<OpView, String> {
             }
         })
         .collect();
-    let parts = nl
-        .simulated
-        .iter()
-        .map(|(&id, name)| {
-            let u = op.element_voltage(name).unwrap_or(0.0);
-            let i = op.current(name).unwrap_or(0.0);
-            (id, PartValues { u, i, p: u * i })
-        })
-        .collect();
+    let mut parts: HashMap<u32, PartValues> = HashMap::new();
+    for (&id, name) in &nl.simulated {
+        let v = match nl.roles.get(&id) {
+            None => {
+                let u = op.element_voltage(name).unwrap_or(0.0);
+                let i = op.current(name).unwrap_or(0.0);
+                PartValues { u, i, p: u * i, ..Default::default() }
+            }
+            Some(SimRole::Ammeter) => {
+                // Strom, der am Pluspol in das Messgerät hinein fließt
+                let i = -op.current(name).unwrap_or(0.0);
+                PartValues { i, ..Default::default() }
+            }
+            Some(SimRole::Pot) => {
+                let (a, b) = (format!("{name}:AS"), format!("{name}:SB"));
+                let (uas, usb) = (op.element_voltage(&a).unwrap_or(0.0), op.element_voltage(&b).unwrap_or(0.0));
+                let (ia, ib) = (op.current(&a).unwrap_or(0.0), op.current(&b).unwrap_or(0.0));
+                PartValues { u: uas + usb, i: ia, p: uas * ia + usb * ib, ctrl_u: usb, ctrl_i: ia - ib, region: None }
+            }
+            Some(SimRole::Bjt { pol }) => {
+                let tv = op.terminal_voltages(name).unwrap_or_default(); // C, B, E
+                let tc = op.terminal_currents(name).unwrap_or_default();
+                let (vce, vbe, vbc) = (pol * (tv[0] - tv[2]), pol * (tv[1] - tv[2]), pol * (tv[1] - tv[0]));
+                let region = if vbe < 0.45 {
+                    Region::Off
+                } else if vbc > 0.4 {
+                    Region::On
+                } else {
+                    Region::Active
+                };
+                PartValues { u: vce, i: pol * tc[0], p: op.power(name).unwrap_or(0.0), ctrl_u: vbe, ctrl_i: pol * tc[1], region: Some(region) }
+            }
+            Some(SimRole::Mos { model }) => {
+                let tv = op.terminal_voltages(name).unwrap_or_default(); // D, G, S
+                let tc = op.terminal_currents(name).unwrap_or_default();
+                let pol = model.polarity();
+                let (vds, vgs) = (pol * (tv[0] - tv[2]), pol * (tv[1] - tv[2]));
+                let region = match model.eval(vgs, vds).region {
+                    elab_sim::MosRegion::Off => Region::Off,
+                    elab_sim::MosRegion::Linear => Region::On,
+                    elab_sim::MosRegion::Saturation => Region::Active,
+                };
+                PartValues { u: vds, i: pol * tc[0], p: op.power(name).unwrap_or(0.0), ctrl_u: vgs, ctrl_i: 0.0, region: Some(region) }
+            }
+        };
+        parts.insert(id, v);
+    }
+    // Voltmeter: Spannung zwischen ihren Anschlüssen
+    for &id in &nl.voltmeters {
+        if let Some(pn) = nl.pin_nets.get(&id) {
+            if let (Some(Some(a)), Some(Some(b))) = (net_v.get(pn[0]), net_v.get(pn[1])) {
+                parts.insert(id, PartValues { u: a - b, ..Default::default() });
+            }
+        }
+    }
     Ok(OpView { net_v, parts, millis: t0.elapsed().as_secs_f64() * 1e3, newton: sim.stats.newton_iterations })
 }
 

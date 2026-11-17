@@ -421,3 +421,138 @@ fn kondensator_nur_ueber_c_angebunden() {
     // Kapazitiver Teiler: zwei gleiche C halbieren den Sprung.
     assert_close(res.voltage_at("m", 0.5e-3).unwrap(), 5.0, 1e-3, "U_m");
 }
+
+// ---------------------------------------------------------------------------
+// Transistoren
+// ---------------------------------------------------------------------------
+
+/// Arbeitspunkt im aktiven Bereich aus dem Modell per Bisektion: (U_BE, I_B, I_C).
+fn bjt_active_reference(m: &BjtModel, vbb: f64, rb: f64) -> (f64, f64, f64) {
+    let vt = elab_sim::diode::VT_300K;
+    let ib = |v: f64| m.is / m.bf * ((v / vt).exp() - 1.0);
+    let vbe = bisect(0.0, 1.0, |v| (vbb - v) / rb - ib(v));
+    (vbe, ib(vbe), m.is * ((vbe / vt).exp() - 1.0))
+}
+
+#[test]
+fn npn_emitterschaltung_aktiver_bereich() {
+    let m = BjtModel::BC547;
+    let mut c = Circuit::new();
+    c.vsource("VCC", "vcc", "gnd", 10.0).unwrap();
+    c.vsource("VBB", "vbb", "gnd", 2.0).unwrap();
+    c.resistor("RB", "vbb", "b", 220e3).unwrap();
+    c.resistor("RC", "vcc", "c", 1e3).unwrap();
+    c.bjt("T1", "c", "b", "gnd", m).unwrap();
+    let r = op(&c);
+    let (vbe, ib, ic) = bjt_active_reference(&m, 2.0, 220e3);
+    let t = r.terminal_currents("T1").unwrap();
+    assert_close(r.voltage("b").unwrap(), vbe, 1e-4, "U_BE");
+    assert_close(t[1], ib, 1e-9, "I_B");
+    assert_close(t[0], ic, 1e-6, "I_C");
+    assert_close(t[0] / t[1], m.bf, 0.5, "β = I_C / I_B");
+    assert_close(t[0] + t[1] + t[2], 0.0, 1e-12, "Knotenregel am Transistor");
+    assert_close(r.voltage("c").unwrap(), 10.0 - 1e3 * ic, 1e-3, "U_C");
+}
+
+#[test]
+fn npn_als_schalter_in_saettigung() {
+    let mut c = Circuit::new();
+    c.vsource("VCC", "vcc", "gnd", 10.0).unwrap();
+    c.vsource("VIN", "in", "gnd", 5.0).unwrap();
+    c.resistor("RB", "in", "b", 4.7e3).unwrap();
+    c.resistor("RC", "vcc", "c", 1e3).unwrap();
+    c.bjt("T1", "c", "b", "gnd", BjtModel::BC547).unwrap();
+    let r = op(&c);
+    let vce = r.voltage("c").unwrap();
+    let t = r.terminal_currents("T1").unwrap();
+    assert!(vce > 0.0 && vce < 0.2, "U_CE,sat = {vce}");
+    assert!(t[0] < BjtModel::BC547.bf * t[1] * 0.5, "übersteuert: I_C deutlich kleiner als β·I_B");
+    assert_close(t[0], (10.0 - vce) / 1e3, 1e-7, "I_C über R_C");
+}
+
+#[test]
+fn pnp_ist_spiegelbild_des_npn() {
+    let (mn, mp) = (BjtModel::BC547, BjtModel { npn: false, ..BjtModel::BC547 });
+    let build = |m: BjtModel, s: f64| {
+        let mut c = Circuit::new();
+        c.vsource("VCC", "vcc", "gnd", 10.0 * s).unwrap();
+        c.vsource("VBB", "vbb", "gnd", 2.0 * s).unwrap();
+        c.resistor("RB", "vbb", "b", 220e3).unwrap();
+        c.resistor("RC", "vcc", "c", 1e3).unwrap();
+        c.bjt("T1", "c", "b", "gnd", m).unwrap();
+        op(&c)
+    };
+    let (n, p) = (build(mn, 1.0), build(mp, -1.0));
+    assert_close(p.voltage("c").unwrap(), -n.voltage("c").unwrap(), 1e-6, "U_C gespiegelt");
+    assert_close(p.terminal_currents("T1").unwrap()[0], -n.terminal_currents("T1").unwrap()[0], 1e-9, "I_C gespiegelt");
+}
+
+#[test]
+fn nmos_saettigung() {
+    let m = MosModel::N2N7000;
+    let mut c = Circuit::new();
+    c.vsource("VDD", "vdd", "gnd", 10.0).unwrap();
+    c.vsource("VG", "g", "gnd", 3.0).unwrap();
+    c.resistor("RD", "vdd", "d", 100.0).unwrap();
+    c.mosfet("M1", "d", "g", "gnd", m).unwrap();
+    let r = op(&c);
+    let vds = r.voltage("d").unwrap();
+    let id = r.terminal_currents("M1").unwrap()[0];
+    // Sättigung: I_D = K·(U_GS − U_th)²·(1 + λ·U_DS) und U_DS = 10 V − 100 Ω · I_D
+    let expect = m.k * 0.81 * (1.0 + m.lambda * vds);
+    assert!(vds > 3.0 - m.vth, "Sättigung erwartet, U_DS = {vds}");
+    assert_close(id, expect, 1e-8, "I_D");
+    assert_close(vds, 10.0 - 100.0 * id, 1e-6, "U_DS");
+    assert_eq!(m.eval(3.0, vds).region, MosRegion::Saturation);
+}
+
+#[test]
+fn nmos_als_schalter_linearer_bereich() {
+    let m = MosModel::N2N7000;
+    let mut c = Circuit::new();
+    c.vsource("VDD", "vdd", "gnd", 5.0).unwrap();
+    c.vsource("VG", "g", "gnd", 10.0).unwrap();
+    c.resistor("RD", "vdd", "d", 1e3).unwrap();
+    c.mosfet("M1", "d", "g", "gnd", m).unwrap();
+    let r = op(&c);
+    let vds = r.voltage("d").unwrap();
+    let id = (5.0 - vds) / 1e3;
+    let vov: f64 = 10.0 - m.vth;
+    let model_id = m.k * (2.0 * vov * vds - vds * vds) * (1.0 + m.lambda * vds);
+    assert!(vds < 0.05, "Schalter ein: U_DS = {vds}");
+    assert_close(model_id, id, 1e-7, "I_D im linearen Bereich");
+}
+
+#[test]
+fn cmos_inverter_kennlinie() {
+    let out = |vin: f64| {
+        let mut c = Circuit::new();
+        c.vsource("VDD", "vdd", "gnd", 5.0).unwrap();
+        c.vsource("VIN", "in", "gnd", vin).unwrap();
+        c.mosfet("MP", "out", "in", "vdd", MosModel::CMOS_P).unwrap();
+        c.mosfet("MN", "out", "in", "gnd", MosModel::CMOS_N).unwrap();
+        c.resistor("RL", "out", "gnd", 10e6).unwrap();
+        op(&c).voltage("out").unwrap()
+    };
+    let vs: Vec<f64> = (0..=50).map(|k| out(k as f64 * 0.1)).collect();
+    assert!(vs[0] > 4.99 && vs[50] < 0.01, "Ausgang {} … {}", vs[0], vs[50]);
+    assert!(vs.windows(2).all(|w| w[1] <= w[0] + 1e-9), "monoton fallend");
+    // Symmetrische Transistoren: Schaltschwelle bei U_DD / 2
+    assert!(out(2.4) > 2.5 && out(2.6) < 2.5, "Schwelle: {} / {}", out(2.4), out(2.6));
+}
+
+#[test]
+fn transistorschalter_im_zeitverlauf() {
+    let mut c = Circuit::new();
+    c.vsource("VCC", "vcc", "gnd", 10.0).unwrap();
+    c.vsource("VIN", "in", "gnd", Waveform::square(0.0, 5.0, 1e3)).unwrap();
+    c.resistor("RB", "in", "b", 4.7e3).unwrap();
+    c.resistor("RC", "vcc", "c", 1e3).unwrap();
+    c.capacitor("CL", "c", "gnd", 10e-9).unwrap();
+    c.bjt("T1", "c", "b", "gnd", BjtModel::BC547).unwrap();
+    let res = tran(&c, TranOptions::new(3e-3, 1e-5));
+    // Eingang hoch → Transistor leitet → Kollektor unten; Eingang tief → oben
+    assert!(res.voltage_at("c", 0.4e-3).unwrap() < 0.2);
+    assert!(res.voltage_at("c", 0.9e-3).unwrap() > 9.9);
+    assert!(res.voltage_at("c", 2.4e-3).unwrap() < 0.2);
+}

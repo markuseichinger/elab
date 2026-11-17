@@ -91,7 +91,7 @@ struct App {
     hist: History,
     ed: Editor,
     sim_on: bool,
-    sim_key: Option<(Document, bool)>,
+    sim_key: Option<(Document, bool, Vec<u32>)>,
     nl: Option<Netlist>,
     op: Result<OpView, String>,
     show_scope: bool,
@@ -121,6 +121,8 @@ struct App {
     palette_digital: bool,
     /// Vom Testskript gedrückter Taster
     script_pressed: Option<u32>,
+    /// Palettenkacheln des letzten Bildes (für Testskripte)
+    tile_rects: Vec<(String, egui::Rect)>,
     /// Zuletzt automatisch gesicherter Stand und Zeitpunkt
     autosaved: Option<Document>,
     autosave_due: f64,
@@ -163,6 +165,7 @@ impl App {
             bottom_tab: panels::BottomTab::Scope,
             palette_digital: false,
             script_pressed: None,
+            tile_rects: Vec::new(),
             autosaved: None,
             autosave_due: 0.0,
         };
@@ -337,12 +340,14 @@ impl App {
     // ------------------------------------------------------------------
 
     fn update_sim(&mut self) {
-        let key_ok = self.sim_key.as_ref().is_some_and(|(d, on)| *d == self.doc && *on == self.sim_on);
+        let mut pressed: Vec<u32> = self.pressed.iter().copied().collect();
+        pressed.sort();
+        let key_ok = self.sim_key.as_ref().is_some_and(|(d, on, p)| *d == self.doc && *on == self.sim_on && *p == pressed);
         if !key_ok {
-            let nl = netlist::build(&self.doc);
+            let nl = netlist::build_with(&self.doc, &self.pressed);
             self.op = if self.sim_on { sim::operating_point(&nl) } else { Err(String::new()) };
             self.nl = Some(nl);
-            self.sim_key = Some((self.doc.clone(), self.sim_on));
+            self.sim_key = Some((self.doc.clone(), self.sim_on, pressed));
         }
         let t_bits = self.scope_t.to_bits();
         let stale = self.scope_key.as_ref().is_none_or(|(d, t)| *d != self.doc || *t != t_bits);
@@ -526,6 +531,7 @@ impl App {
             }
         });
         let groups = if self.palette_digital { PartKind::palette_digital() } else { PartKind::palette_analog() };
+        self.tile_rects.clear();
         for (cat, kinds) in groups {
             ui.label(RichText::new(cat).small().color(MUTED));
             ui.horizontal_wrapped(|ui| {
@@ -534,6 +540,7 @@ impl App {
                     let selected = matches!(&self.ed.tool, Tool::Place(k) if *k == kind);
                     let r =
                         tile(ui, &kind, selected).on_hover_text(format!("{}: in den Schaltplan ziehen oder anklicken und absetzen", kind.label()));
+                    self.tile_rects.push((kind.label().to_string(), r.rect));
                     if r.drag_started() {
                         self.topic = Topic::of(&kind);
                         self.ed.place_rot = 0;
@@ -781,8 +788,54 @@ impl App {
                     new_kind = Some(PartKind::LogicLed { color: c });
                 }
             }
+            PartKind::Transistor { kind } => {
+                let mut k = kind;
+                ui.horizontal(|ui| {
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Typ").color(MUTED)));
+                    egui::ComboBox::from_id_salt(("tt", id)).selected_text(k.label()).show_ui(ui, |ui| {
+                        for t in elab_app::model::TransistorType::ALL.into_iter().filter(|t| t.family() == kind.family()) {
+                            ui.selectable_value(&mut k, t, t.label());
+                        }
+                    });
+                });
+                if k != kind {
+                    new_kind = Some(PartKind::Transistor { kind: k });
+                }
+                let info = match (k.bjt(), k.mos()) {
+                    (Some(m), _) => format!("β = {:.0}, I_S = {}", m.bf, fmt_si(m.is, "A")),
+                    (_, Some(m)) => format!("U_th = {}, K = {}", fmt_si(if m.nmos { m.vth } else { -m.vth }, "V"), fmt_si(m.k, "A/V²")),
+                    _ => String::new(),
+                };
+                ui.label(RichText::new(format!("Modell: {info}")).color(MUTED));
+            }
+            PartKind::Potentiometer { r, pos } => {
+                if let Some(v) = self.si_field(ui, "Widerstand", "Ω", r, true, "pr") {
+                    new_kind = Some(PartKind::Potentiometer { r: v, pos });
+                }
+                let mut p = pos * 100.0;
+                let resp = ui
+                    .horizontal(|ui| {
+                        ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Stellung").color(MUTED)));
+                        ui.add(egui::Slider::new(&mut p, 0.0..=100.0).suffix(" %").fixed_decimals(0))
+                    })
+                    .inner;
+                if resp.drag_started() {
+                    self.hist.checkpoint(&self.doc);
+                }
+                if (p / 100.0 - pos).abs() > 1e-9 {
+                    if !resp.dragged() {
+                        self.hist.checkpoint(&self.doc);
+                    }
+                    // Live verstellen, ohne für jeden Zwischenschritt einen Undo-Schritt anzulegen
+                    self.doc.part_mut(id).unwrap().kind = PartKind::Potentiometer { r, pos: p / 100.0 };
+                }
+                ui.label(RichText::new("Anteil zwischen Schleifer S und B. Pfeiltasten verstellen ebenfalls.").small().color(MUTED));
+            }
             PartKind::Ground
             | PartKind::Probe
+            | PartKind::PushButton
+            | PartKind::Voltmeter
+            | PartKind::Ammeter
             | PartKind::Button
             | PartKind::LogicHigh
             | PartKind::DFlipFlop
@@ -844,7 +897,39 @@ impl App {
                 if let Some(v) = probe_v {
                     big_value(ui, "U", &fmt_si(v, "V"), ACCENT);
                 }
-                if let Some(v) = vals {
+                if let (Some(v), PartKind::Transistor { kind }) = (vals, &part.kind) {
+                    let bjt = kind.is_bjt();
+                    let neg = matches!(kind.family(), elab_app::model::TransistorFamily::Pnp | elab_app::model::TransistorFamily::Pmos);
+                    let (uc, uo, ic, io) = match (bjt, neg) {
+                        (true, false) => ("U_BE", "U_CE", "I_B", "I_C"),
+                        (true, true) => ("U_EB", "U_EC", "I_B", "I_C"),
+                        (false, false) => ("U_GS", "U_DS", "I_G", "I_D"),
+                        (false, true) => ("U_SG", "U_SD", "I_G", "I_D"),
+                    };
+                    big_value(ui, uc, &fmt_si(v.ctrl_u, "V"), ACCENT);
+                    big_value(ui, uo, &fmt_si(v.u, "V"), ACCENT);
+                    big_value(ui, ic, &fmt_si(v.ctrl_i, "A"), BLUE);
+                    big_value(ui, io, &fmt_si(v.i, "A"), BLUE);
+                    if bjt && v.ctrl_i.abs() > 1e-12 && v.i.abs() > 1e-12 {
+                        big_value(ui, "I_C / I_B", &format!("{:.0}", v.i / v.ctrl_i), MUTED);
+                    }
+                    big_value(ui, "P", &fmt_si(v.p, "W"), GREEN);
+                    if let Some(reg) = v.region {
+                        ui.label(RichText::new(reg.text(bjt)).strong());
+                    }
+                } else if let (Some(v), PartKind::Voltmeter) = (vals, &part.kind) {
+                    big_value(ui, "Anzeige", &fmt_si(v.u, "V"), ACCENT);
+                } else if let (Some(v), PartKind::Ammeter) = (vals, &part.kind) {
+                    big_value(ui, "Anzeige", &fmt_si(v.i, "A"), BLUE);
+                    if v.i.abs() > 10.0 {
+                        ui.label(RichText::new("Überlast: Das Amperemeter liegt wohl parallel zu einer Spannungsquelle (Kurzschluss).").color(RED));
+                    }
+                } else if let (Some(v), PartKind::Potentiometer { .. }) = (vals, &part.kind) {
+                    big_value(ui, "U_AB", &fmt_si(v.u, "V"), ACCENT);
+                    big_value(ui, "U_SB", &fmt_si(v.ctrl_u, "V"), ACCENT);
+                    big_value(ui, "I_A", &fmt_si(v.i, "A"), BLUE);
+                    big_value(ui, "I_Schleifer", &fmt_si(v.ctrl_i, "A"), BLUE);
+                } else if let Some(v) = vals {
                     big_value(ui, "U", &fmt_si(v.u, "V"), ACCENT);
                     big_value(ui, "I", &fmt_si(v.i, "A"), BLUE);
                     let pl = if part.kind.shape() == Shape::Source { "P (abgegeben)" } else { "P" };
@@ -864,7 +949,7 @@ impl App {
                         }
                     }
                     let pn = part.kind.pin_names();
-                    if pn.len() == 2 {
+                    if pn.len() == 2 && !matches!(part.kind, PartKind::Voltmeter | PartKind::Ammeter) {
                         ui.label(
                             RichText::new(format!("U gemessen von {} nach {}; I positiv in dieser Richtung.", pn[0], pn[1])).small().color(MUTED),
                         );
@@ -948,6 +1033,15 @@ impl App {
             }
         });
         ui.add_space(6.0);
+        ui.label(RichText::new("Transistoren & Messen").strong().color(MUTED));
+        ui.horizontal_wrapped(|ui| {
+            for t in Topic::TRANSISTORS {
+                if ui.selectable_label(self.topic == t, tutorial::doc(t).title).clicked() {
+                    self.topic = t;
+                }
+            }
+        });
+        ui.add_space(6.0);
         ui.label(RichText::new("Digitaltechnik").strong().color(MUTED));
         ui.horizontal_wrapped(|ui| {
             for t in Topic::DIGITAL {
@@ -1005,11 +1099,6 @@ impl App {
             if let Some(Ok(s)) = &self.scope {
                 ui.label(RichText::new(format!("{} Zeitschritte · {}", s.steps, fmt_si(s.millis * 1e-3, "s"))).color(MUTED));
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("✕").on_hover_text("Oszilloskop ausblenden").clicked() {
-                    self.show_scope = false;
-                }
-            });
         });
         let (scale, unit) = if self.scope_t < 1e-3 {
             (1e6, "µs")
@@ -1090,6 +1179,23 @@ impl App {
                 self.script.as_mut().unwrap().click(p, m);
             }
             ClickPx(x, y) => self.script.as_mut().unwrap().click(egui::pos2(x, y), Modifiers::NONE),
+            PalDrag(label, gx, gy) => {
+                let digital = PartKind::palette_digital().iter().flat_map(|g| g.1.iter()).any(|k| k.label() == label)
+                    && !PartKind::palette_analog().iter().flat_map(|g| g.1.iter()).any(|k| k.label() == label);
+                if digital != self.palette_digital {
+                    // Erst den Palettenreiter wechseln, dann im nächsten Schritt ziehen
+                    self.palette_digital = digital;
+                    let run = self.script.as_mut().unwrap();
+                    run.cmds.push_front(PalDrag(label, gx, gy));
+                    run.wait = 2;
+                    return;
+                }
+                let Some(rect) = self.tile_rects.iter().find(|t| t.0 == label).map(|t| t.1) else {
+                    panic!("Skript: Palettenkachel „{label}“ nicht gefunden");
+                };
+                let b = to_screen(&self.ed, gx, gy);
+                self.script.as_mut().unwrap().drag(rect.center(), b);
+            }
             DragPxGrid(px, py, gx, gy) => {
                 let b = to_screen(&self.ed, gx, gy);
                 self.script.as_mut().unwrap().drag(egui::pos2(px, py), b);
@@ -1223,6 +1329,10 @@ fn tile(ui: &mut egui::Ui, kind: &PartKind, selected: bool) -> egui::Response {
         Shape::Source => (3, 13.0, Vec2::ZERO),
         Shape::TwoPole => (0, 14.0, Vec2::ZERO),
         Shape::OnePin => (0, 13.0, Vec2::new(0.0, -7.0)),
+        Shape::ThreePole => {
+            let (x0, y0, x1, y1) = kind.local_bbox();
+            (0, 12.0, -Vec2::new((x0 + x1) * 0.5, (y0 + y1) * 0.5) * 12.0)
+        }
         Shape::Logic => {
             let (x0, y0, x1, y1) = kind.local_bbox();
             let s = (62.0 / (x1 - x0)).min(36.0 / (y1 - y0)).min(13.0);
@@ -1247,6 +1357,14 @@ fn tile(ui: &mut egui::Ui, kind: &PartKind, selected: bool) -> egui::Response {
         PartKind::CurrentSource { .. } => "Strom",
         PartKind::Lamp { .. } => "Lampe",
         PartKind::Led { .. } => "LED",
+        PartKind::Transistor { kind } => match kind.family() {
+            elab_app::model::TransistorFamily::Npn => "NPN",
+            elab_app::model::TransistorFamily::Pnp => "PNP",
+            elab_app::model::TransistorFamily::Nmos => "N-MOS",
+            elab_app::model::TransistorFamily::Pmos => "P-MOS",
+        },
+        PartKind::Potentiometer { .. } => "Poti",
+        PartKind::Ammeter => "Ampere",
         PartKind::Gate { gate } => gate.label(),
         PartKind::LogicInput { .. } => "Schalter",
         PartKind::Clock { .. } => "Takt",

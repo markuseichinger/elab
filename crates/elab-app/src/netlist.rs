@@ -34,9 +34,27 @@ pub struct Netlist {
     pub excluded: Vec<u32>,
     /// Zweipole, deren beide Anschlüsse am selben Netz hängen (überbrückt, stromlos).
     pub bridged: Vec<u32>,
+    /// Besondere Auswertung einzelner Bauteile (Transistoren, Messgeräte, Potentiometer)
+    pub roles: HashMap<u32, SimRole>,
+    /// Voltmeter (kein Simulator-Element, sie messen nur)
+    pub voltmeters: Vec<u32>,
     /// Digitalteil der Schaltung (falls Digitalbausteine vorhanden)
     pub digital: Option<DigitalNetlist>,
     pub error: Option<String>,
+}
+
+/// Wie ein Bauteil ausgewertet wird.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SimRole {
+    Ammeter,
+    Pot,
+    /// Bipolartransistor, Polarität +1 (NPN) / −1 (PNP)
+    Bjt {
+        pol: f64,
+    },
+    Mos {
+        model: elab_sim::MosModel,
+    },
 }
 
 /// Digitalteil: Bausteine für [`elab_sim::digital::DigitalSim`].
@@ -64,7 +82,7 @@ fn build_digital(doc: &Document, nl: &mut Netlist) {
     let mut digital_part: Vec<Option<&str>> = vec![None; n];
     for part in &doc.parts {
         let digital = part.kind.is_digital();
-        let neutral = matches!(part.kind, PartKind::Ground | PartKind::Probe);
+        let neutral = matches!(part.kind, PartKind::Ground | PartKind::Probe | PartKind::Voltmeter);
         for &net in &nl.pin_nets[&part.id] {
             if digital {
                 is_dig[net] = true;
@@ -147,6 +165,11 @@ impl Dsu {
 
 /// Erzeugt die Netzliste. Fehler stehen in `error`, die übrigen Felder sind trotzdem gefüllt.
 pub fn build(doc: &Document) -> Netlist {
+    build_with(doc, &HashSet::new())
+}
+
+/// Wie [`build`], mit dem Zustand gedrückter Taster.
+pub fn build_with(doc: &Document, pressed: &HashSet<u32>) -> Netlist {
     // 1. Alle Anschlusspunkte einsammeln
     let mut idx: HashMap<P, usize> = HashMap::new();
     let mut pts: Vec<P> = Vec::new();
@@ -226,13 +249,13 @@ pub fn build(doc: &Document) -> Netlist {
     let wire_net: HashMap<u32, usize> = doc.wires.iter().map(|w| (w.id, net_of[&w.a])).collect();
 
     // 4. Erreichbarkeit ab Masse über analoge Zweipole
-    let is_analog = |k: &PartKind| !k.is_digital() && !matches!(k, PartKind::Ground | PartKind::Probe);
+    let is_analog = |k: &PartKind| !k.is_digital() && !matches!(k, PartKind::Ground | PartKind::Probe | PartKind::Voltmeter);
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); nets.len()];
     for part in doc.parts.iter().filter(|p| is_analog(&p.kind)) {
         let pn = &pin_nets[&part.id];
-        if pn.len() == 2 {
-            adj[pn[0]].push(pn[1]);
-            adj[pn[1]].push(pn[0]);
+        for w in pn.windows(2) {
+            adj[w[0]].push(w[1]);
+            adj[w[1]].push(w[0]);
         }
     }
     if has_gnd {
@@ -257,6 +280,8 @@ pub fn build(doc: &Document) -> Netlist {
         simulated: HashMap::new(),
         excluded: Vec::new(),
         bridged: Vec::new(),
+        roles: HashMap::new(),
+        voltmeters: doc.parts.iter().filter(|p| matches!(p.kind, PartKind::Voltmeter)).map(|p| p.id).collect(),
         digital: None,
         error: None,
     };
@@ -282,12 +307,52 @@ pub fn build(doc: &Document) -> Netlist {
     }
     for part in electrical {
         let pn = nl.pin_nets[&part.id].clone();
-        if !nl.nets[pn[0]].reachable {
+        if !pn.iter().any(|&n| nl.nets[n].reachable) {
             nl.excluded.push(part.id);
             continue;
         }
-        let a = nl.circuit.node(&nl.nets[pn[0]].name);
-        let b = nl.circuit.node(&nl.nets[pn[1]].name);
+        let nodes: Vec<usize> = pn.iter().map(|&n| nl.circuit.node(&nl.nets[n].name)).collect();
+        let (a, b) = (nodes[0], nodes[1]);
+        // Mehrteilige Bauteile
+        match &part.kind {
+            PartKind::Potentiometer { r, pos } => {
+                let pos = pos.clamp(0.0, 1.0);
+                // Stellung = Anteil zwischen Schleifer und B
+                let (ra, rb) = ((r * (1.0 - pos)).max(1e-3), (r * pos).max(1e-3));
+                let ok = nl.circuit.add(&format!("{}:AS", part.name), ElementKind::Resistor { a, b, r: ra }).is_ok()
+                    && nl.circuit.add(&format!("{}:SB", part.name), ElementKind::Resistor { a: b, b: nodes[2], r: rb }).is_ok();
+                if ok {
+                    nl.simulated.insert(part.id, part.name.clone());
+                    nl.roles.insert(part.id, SimRole::Pot);
+                } else {
+                    nl.error.get_or_insert(format!("Der Name „{}“ ist doppelt vergeben. Benenne eines der Bauteile um.", part.name));
+                }
+                continue;
+            }
+            PartKind::Transistor { kind } => {
+                let elem = match (kind.bjt(), kind.mos()) {
+                    (Some(model), _) => ElementKind::Bjt { c: nodes[1], b: nodes[0], e: nodes[2], model },
+                    (_, Some(model)) => ElementKind::Mosfet { d: nodes[1], g: nodes[0], s: nodes[2], model },
+                    _ => unreachable!(),
+                };
+                let role = match (kind.bjt(), kind.mos()) {
+                    (Some(m), _) => SimRole::Bjt { pol: m.polarity() },
+                    (_, Some(m)) => SimRole::Mos { model: m },
+                    _ => unreachable!(),
+                };
+                match nl.circuit.add(&part.name, elem) {
+                    Ok(_) => {
+                        nl.simulated.insert(part.id, part.name.clone());
+                        nl.roles.insert(part.id, role);
+                    }
+                    Err(e) => {
+                        nl.error.get_or_insert(e.to_string());
+                    }
+                }
+                continue;
+            }
+            _ => {}
+        }
         let kind = match &part.kind {
             PartKind::Resistor { r } => ElementKind::Resistor { a, b, r: *r },
             PartKind::Lamp { v_nom, p_nom } => ElementKind::Resistor { a, b, r: v_nom * v_nom / p_nom },
@@ -304,7 +369,12 @@ pub fn build(doc: &Document) -> Netlist {
             PartKind::Diode { kind } => ElementKind::Diode { a, k: b, model: kind.model() },
             PartKind::Led { color } => ElementKind::Diode { a, k: b, model: color.model() },
             PartKind::Switch { closed } => ElementKind::Switch { a, b, closed: *closed, r_on: 1e-3, r_off: 1e15 },
-            _ => unreachable!("nur analoge Bauteile"),
+            PartKind::PushButton => ElementKind::Switch { a, b, closed: pressed.contains(&part.id), r_on: 1e-3, r_off: 1e15 },
+            PartKind::Ammeter => {
+                nl.roles.insert(part.id, SimRole::Ammeter);
+                ElementKind::VSource { p: a, n: b, wave: Waveform::Dc(0.0) }
+            }
+            other => unreachable!("{other:?} ist kein Analogbauteil"),
         };
         match nl.circuit.add(&part.name, kind) {
             Ok(_) => {

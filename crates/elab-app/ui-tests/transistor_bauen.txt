@@ -1,0 +1,42 @@
+# Transistorschalter per Drag & Drop: Leitungen ziehen, dann Bauteile darauf
+# setzen (sie werden eingefügt und drehen sich passend), Taster gedrückt halten.
+# Aufruf: cargo run --release -- --script crates/elab-app/ui-tests/transistor_bauen.txt
+
+wait 10
+cmd N
+wait 3
+paldrag Gleichspannung 0 0
+paldrag Masse 0 8
+paldrag NPN-Transistor 13 4
+tool wire
+click 0 -2
+click 0 -8
+click 14 -8
+click 14 2
+tool wire
+click 0 2
+click 0 8
+tool wire
+click 0 8
+click 14 8
+click 14 6
+tool wire
+click 4 -8
+click 4 4
+click 11 4
+tool select
+wait 3
+paldrag Widerstand 4 0
+paldrag Taster 4 -4
+paldrag Widerstand 14 -5
+paldrag Leuchtdiode 14 -1
+wait 3
+dump ui-out/t_aus.json
+hold 4 -4
+wait 6
+dump ui-out/t_ein.json
+fit
+wait 4
+shot ui-out/t_ein.ppm
+release
+quit

@@ -25,11 +25,13 @@ pub mod circuit;
 pub mod digital;
 pub mod diode;
 pub mod linalg;
+pub mod transistor;
 pub mod waveform;
 
 pub use analysis::{OpResult, SimOptions, Simulator, Stats, TranOptions, TranResult};
 pub use circuit::{Circuit, Element, ElementKind, NodeId, SimError, GND};
 pub use diode::DiodeModel;
+pub use transistor::{BjtModel, MosModel, MosRegion};
 pub use waveform::Waveform;
 
 /// Formatiert einen Wert mit SI-Präfix und deutschem Dezimalkomma, z. B. `1,5 ms`.

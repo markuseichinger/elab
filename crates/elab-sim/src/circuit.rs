@@ -1,6 +1,7 @@
 //! Schaltungsbeschreibung: Knoten und Bauteile.
 
 use crate::diode::DiodeModel;
+use crate::transistor::{BjtModel, MosModel};
 use crate::waveform::Waveform;
 use std::collections::HashMap;
 
@@ -68,16 +69,33 @@ pub enum ElementKind {
         r_on: f64,
         r_off: f64,
     },
+    /// Bipolartransistor: Kollektor, Basis, Emitter.
+    Bjt {
+        c: NodeId,
+        b: NodeId,
+        e: NodeId,
+        model: BjtModel,
+    },
+    /// MOSFET (Anreicherung, Substrat an Source): Drain, Gate, Source.
+    Mosfet {
+        d: NodeId,
+        g: NodeId,
+        s: NodeId,
+        model: MosModel,
+    },
 }
 
 impl ElementKind {
     /// Anschlussknoten des Bauteils.
-    pub fn terminals(&self) -> [NodeId; 2] {
+    /// Bei Transistoren: (C, B, E) bzw. (D, G, S).
+    pub fn terminals(&self) -> Vec<NodeId> {
         use ElementKind::*;
         match *self {
-            Resistor { a, b, .. } | Capacitor { a, b, .. } | Inductor { a, b, .. } | Switch { a, b, .. } => [a, b],
-            VSource { p, n, .. } | ISource { p, n, .. } => [p, n],
-            Diode { a, k, .. } => [a, k],
+            Resistor { a, b, .. } | Capacitor { a, b, .. } | Inductor { a, b, .. } | Switch { a, b, .. } => vec![a, b],
+            VSource { p, n, .. } | ISource { p, n, .. } => vec![p, n],
+            Diode { a, k, .. } => vec![a, k],
+            Bjt { c, b, e, .. } => vec![c, b, e],
+            Mosfet { d, g, s, .. } => vec![d, g, s],
         }
     }
 
@@ -87,7 +105,7 @@ impl ElementKind {
     }
 
     pub(crate) fn is_nonlinear(&self) -> bool {
-        matches!(self, ElementKind::Diode { .. })
+        matches!(self, ElementKind::Diode { .. } | ElementKind::Bjt { .. } | ElementKind::Mosfet { .. })
     }
 
     /// Kurzname des Bauteiltyps für Meldungen.
@@ -101,6 +119,8 @@ impl ElementKind {
             ISource { .. } => "Stromquelle",
             Diode { .. } => "Diode",
             Switch { .. } => "Schalter",
+            Bjt { .. } => "Transistor",
+            Mosfet { .. } => "MOSFET",
         }
     }
 }
@@ -261,6 +281,16 @@ impl Circuit {
         self.add(name, ElementKind::Diode { a, k, model })
     }
 
+    pub fn bjt(&mut self, name: &str, c: &str, b: &str, e: &str, model: BjtModel) -> Result<usize, SimError> {
+        let (c, b, e) = (self.node(c), self.node(b), self.node(e));
+        self.add(name, ElementKind::Bjt { c, b, e, model })
+    }
+
+    pub fn mosfet(&mut self, name: &str, d: &str, g: &str, s: &str, model: MosModel) -> Result<usize, SimError> {
+        let (d, g, s) = (self.node(d), self.node(g), self.node(s));
+        self.add(name, ElementKind::Mosfet { d, g, s, model })
+    }
+
     pub fn switch(&mut self, name: &str, a: &str, b: &str, closed: bool) -> Result<usize, SimError> {
         let (a, b) = (self.node(a), self.node(b));
         self.add(name, ElementKind::Switch { a, b, closed, r_on: 1e-3, r_off: 1e12 })
@@ -278,10 +308,12 @@ impl Circuit {
             x
         }
         for e in &self.elements {
-            let [a, b] = e.kind.terminals();
-            let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
-            if ra != rb {
-                parent[ra] = rb;
+            let t = e.kind.terminals();
+            for w in t.windows(2) {
+                let (ra, rb) = (find(&mut parent, w[0]), find(&mut parent, w[1]));
+                if ra != rb {
+                    parent[ra] = rb;
+                }
             }
         }
         let root = find(&mut parent, GND);
@@ -313,8 +345,11 @@ fn validate(name: &str, kind: &ElementKind) -> Result<(), SimError> {
         Inductor { l, .. } if !pos(*l) => bad("Die Induktivität muss größer als 0 H sein."),
         Diode { model, .. } if !pos(model.is) || !pos(model.n) => bad("Is und n der Diode müssen positiv sein."),
         Switch { r_on, r_off, .. } if !pos(*r_on) || !pos(*r_off) => bad("Schalterwiderstände müssen positiv sein."),
+        Bjt { model, .. } if !pos(model.is) || !pos(model.bf) || !pos(model.br) => bad("Is, βF und βR müssen positiv sein."),
+        Mosfet { model, .. } if !pos(model.k) || !model.vth.is_finite() || model.lambda < 0.0 => bad("K muss positiv, λ darf nicht negativ sein."),
         _ => {
-            let [a, b] = kind.terminals();
+            let t = kind.terminals();
+            let (a, b) = (t[0], t[1]);
             if a == b && kind.needs_branch() {
                 return bad("Beide Anschlüsse liegen am selben Knoten, das Bauteil ist kurzgeschlossen.");
             }

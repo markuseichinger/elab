@@ -359,6 +359,27 @@ impl Editor {
                     i.consume_key(Modifiers::COMMAND, Key::A),
                 )
             });
+            // Potentiometer mit den Pfeiltasten verstellen
+            let step = ui.input(|i| {
+                let fine = if i.modifiers.shift { 0.01 } else { 0.05 };
+                if i.key_pressed(Key::ArrowRight) || i.key_pressed(Key::ArrowUp) {
+                    fine
+                } else if i.key_pressed(Key::ArrowLeft) || i.key_pressed(Key::ArrowDown) {
+                    -fine
+                } else {
+                    0.0
+                }
+            });
+            if step != 0.0 {
+                if let Some(id) = self.single_selected() {
+                    if let Some(PartKind::Potentiometer { r, pos }) = doc.part(id).map(|p| p.kind.clone()) {
+                        hist.checkpoint(doc);
+                        let pos = ((pos + step) * 100.0).round() / 100.0;
+                        doc.part_mut(id).unwrap().kind = PartKind::Potentiometer { r, pos: pos.clamp(0.0, 1.0) };
+                        out.changed = true;
+                    }
+                }
+            }
             if esc {
                 if let Drag::Move { base, .. } = &self.drag {
                     *doc = base.clone();
@@ -410,7 +431,7 @@ impl Editor {
         if self.tool == Tool::Select && resp.is_pointer_button_down_on() {
             if let Some(o) = ui.input(|i| i.pointer.press_origin()) {
                 if let Hover::Part(id) | Hover::Pin(_, id, _) = self.hit(doc, self.to_grid(r, o)) {
-                    if matches!(doc.part(id).map(|p| &p.kind), Some(PartKind::Button)) {
+                    if matches!(doc.part(id).map(|p| &p.kind), Some(PartKind::Button | PartKind::PushButton)) {
                         out.pressed = Some(id);
                     }
                 }
@@ -738,6 +759,10 @@ impl Editor {
                 Vec::new()
             };
             symbols::draw(&pen, &part.kind, Live { glow, pins, pressed: live.pressed.contains(&part.id) });
+            if matches!(part.kind, PartKind::Voltmeter | PartKind::Ammeter) {
+                self.paint_meter(painter, r, part, vals.copied(), live.op.is_some(), s);
+                continue;
+            }
             if s >= 9.0 && !matches!(part.kind, PartKind::Ground | PartKind::LogicHigh) {
                 if part.kind.is_digital() {
                     let (x0, y0, x1, _) = part.bbox();
@@ -756,7 +781,7 @@ impl Editor {
             // Grün, wenn das Bauteil in eine bestehende Leitung eingefügt wird
             let rot = doc.snap_rotation(kind, *p, self.place_rot);
             let probe = elab_app::model::Part { id: 0, name: String::new(), kind: kind.clone(), pos: *p, rot };
-            let inserts = doc.would_insert(&probe.pins());
+            let inserts = doc.would_insert(kind, &probe.pins());
             let col = if inserts { GREEN } else { ACCENT.gamma_multiply(0.75) };
             let pen = Pen { painter, origin: self.sp(r, *p), s, rot, color: col, width: pw };
             if matches!(kind, PartKind::Probe) {
@@ -815,6 +840,9 @@ impl Editor {
         let (ax, ay) = match (kind.shape(), kind) {
             (Shape::Source, _) => (1.25, 0.0),
             (_, PartKind::Led { .. }) => (0.0, -1.5),
+            (_, PartKind::Transistor { .. }) => (1.85, 0.0),
+            (_, PartKind::Potentiometer { .. }) => (0.0, 1.05),
+            (_, PartKind::PushButton) => (0.0, 0.75),
             _ => (0.0, -1.05),
         };
         let (dx, dy) = rot_f(ax, ay, rot);
@@ -834,6 +862,45 @@ impl Editor {
             painter.text(at, al, name, font.clone(), name_col);
             painter.text(at, al2, &value, font.clone(), MUTED);
         }
+    }
+
+    /// Anzeige eines Messgeräts: LCD-Kasten über dem Symbol.
+    fn paint_meter(&self, painter: &egui::Painter, r: Rect, part: &elab_app::model::Part, v: Option<elab_app::sim::PartValues>, sim: bool, s: f32) {
+        let volt = matches!(part.kind, PartKind::Voltmeter);
+        let text = match (v, sim) {
+            (Some(v), _) if volt => fmt_si(v.u, "V"),
+            (Some(v), _) if v.i.abs() > 10.0 => "ÜBERLAST".to_string(),
+            (Some(v), _) => fmt_si(v.i, "A"),
+            (None, true) => "– – –".to_string(),
+            (None, false) => "aus".to_string(),
+        };
+        let (x0, y0, x1, y1) = part.bbox();
+        let fs = (s * 0.75).clamp(11.0, 22.0);
+        let g = painter.layout_no_wrap(text, FontId::monospace(fs), Color32::from_rgb(140, 230, 255));
+        let name = painter.layout_no_wrap(part.name.clone(), FontId::proportional((fs * 0.6).max(9.0)), MUTED);
+        let w = g.size().x.max(name.size().x) + 14.0;
+        let h = g.size().y + name.size().y + 8.0;
+        // Über dem Symbol, bei senkrechter Lage rechts daneben
+        let vertical = part.rot % 2 == 1;
+        let rect = if vertical {
+            let c = self.to_screen(r, x1, (y0 + y1) * 0.5);
+            let right = Rect::from_min_size(c + Vec2::new(6.0, -h * 0.5), Vec2::new(w, h));
+            if right.right() > r.right() - 4.0 {
+                // Am rechten Rand: links neben das Symbol
+                let c = self.to_screen(r, x0, (y0 + y1) * 0.5);
+                Rect::from_min_size(c + Vec2::new(-6.0 - w, -h * 0.5), Vec2::new(w, h))
+            } else {
+                right
+            }
+        } else {
+            let c = self.to_screen(r, (x0 + x1) * 0.5, y0);
+            Rect::from_min_size(c + Vec2::new(-w * 0.5, -h - 4.0), Vec2::new(w, h))
+        };
+        painter.rect_filled(rect, 4.0, Color32::from_rgb(14, 26, 30));
+        painter.rect_stroke(rect, 4.0, Stroke::new(1.2, Color32::from_rgb(60, 110, 125)), StrokeKind::Inside);
+        let nh = name.size().y;
+        painter.galley(rect.min + Vec2::new(7.0, 3.0), name, MUTED);
+        painter.galley(rect.min + Vec2::new(7.0, 4.0 + nh), g, Color32::WHITE);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -919,6 +986,38 @@ impl Editor {
                     if self.tool == Tool::Select {
                         lines.push(("Ziehen, um einen Draht zu verlegen".into(), MUTED, false));
                     }
+                } else if let (Some(v), PartKind::Transistor { kind }) = (live.op.and_then(|o| o.parts.get(&id)), &part.kind) {
+                    let bjt = kind.is_bjt();
+                    let pnp = matches!(kind.family(), elab_app::model::TransistorFamily::Pnp | elab_app::model::TransistorFamily::Pmos);
+                    let (uo, uc, io, ic) = match (bjt, pnp) {
+                        (true, false) => ("U_CE", "U_BE", "I_C", "I_B"),
+                        (true, true) => ("U_EC", "U_EB", "I_C", "I_B"),
+                        (false, false) => ("U_DS", "U_GS", "I_D", ""),
+                        (false, true) => ("U_SD", "U_SG", "I_D", ""),
+                    };
+                    lines.push((format!("{uc} = {}   {uo} = {}", fmt_si(v.ctrl_u, "V"), fmt_si(v.u, "V")), ACCENT, false));
+                    if bjt {
+                        lines.push((format!("{ic} = {}   {io} = {}", fmt_si(v.ctrl_i, "A"), fmt_si(v.i, "A")), BLUE, false));
+                        if v.ctrl_i.abs() > 1e-12 && v.i.abs() > 1e-12 {
+                            lines.push((format!("I_C / I_B = {:.0}", v.i / v.ctrl_i), MUTED, false));
+                        }
+                    } else {
+                        lines.push((format!("{io} = {}   (Gate stromlos)", fmt_si(v.i, "A")), BLUE, false));
+                    }
+                    lines.push((format!("P = {} (Verlustleistung)", fmt_si(v.p, "W")), GREEN, false));
+                    if let Some(reg) = v.region {
+                        lines.push((reg.text(bjt).to_string(), Color32::WHITE, false));
+                    }
+                } else if let (Some(v), PartKind::Potentiometer { .. }) = (live.op.and_then(|o| o.parts.get(&id)), &part.kind) {
+                    lines.push((format!("U_AB = {}   U_SB = {}", fmt_si(v.u, "V"), fmt_si(v.ctrl_u, "V")), ACCENT, false));
+                    lines.push((format!("I_A = {}   I_Schleifer = {}", fmt_si(v.i, "A"), fmt_si(v.ctrl_i, "A")), BLUE, false));
+                    lines.push(("Wenn ausgewählt: ← / → verstellt den Schleifer".into(), MUTED, false));
+                } else if let (Some(v), PartKind::Voltmeter) = (live.op.and_then(|o| o.parts.get(&id)), &part.kind) {
+                    lines.push((format!("U = {} (+ gegen −)", fmt_si(v.u, "V")), ACCENT, false));
+                    lines.push(("Misst parallel, belastet die Schaltung nicht".into(), MUTED, false));
+                } else if let (Some(v), PartKind::Ammeter) = (live.op.and_then(|o| o.parts.get(&id)), &part.kind) {
+                    lines.push((format!("I = {} (von + nach −)", fmt_si(v.i, "A")), BLUE, false));
+                    lines.push(("Misst in Reihe, Innenwiderstand 0 Ω".into(), MUTED, false));
                 } else if let Some(v) = live.op.and_then(|o| o.parts.get(&id)) {
                     lines.push((format!("U = {}", fmt_si(v.u, "V")), ACCENT, false));
                     lines.push((format!("I = {}", fmt_si(v.i, "A")), BLUE, false));

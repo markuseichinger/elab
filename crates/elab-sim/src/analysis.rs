@@ -9,8 +9,9 @@
 //! das Begleitmodell des Integrationsverfahrens ersetzt.
 
 use crate::circuit::{Circuit, ElementKind, NodeId, SimError};
-use crate::diode::pnjlim;
+use crate::diode::{pnjlim, VT_300K};
 use crate::linalg::Matrix;
+use crate::transistor::fetlim;
 use std::collections::HashMap;
 
 /// Leitwert parallel zu jedem pn-Übergang (wie GMIN in SPICE).
@@ -113,8 +114,9 @@ struct Layout {
     n_nodes: usize,
     size: usize,
     branch: Vec<Option<usize>>,
-    diode: Vec<Option<usize>>,
-    n_diodes: usize,
+    /// Erster Platz im Vektor der begrenzten Steuerspannungen (Diode: 1, Transistor: 2)
+    lim: Vec<Option<usize>>,
+    n_lim: usize,
     nonlinear: bool,
 }
 
@@ -122,9 +124,9 @@ impl Layout {
     fn new(c: &Circuit) -> Self {
         let n_nodes = c.node_count();
         let mut size = n_nodes - 1;
-        let mut n_diodes = 0;
+        let mut n_lim = 0;
         let mut branch = Vec::new();
-        let mut diode = Vec::new();
+        let mut lim = Vec::new();
         for e in c.elements() {
             if e.kind.needs_branch() {
                 branch.push(Some(size));
@@ -132,15 +134,20 @@ impl Layout {
             } else {
                 branch.push(None);
             }
-            if matches!(e.kind, ElementKind::Diode { .. }) {
-                diode.push(Some(n_diodes));
-                n_diodes += 1;
+            let slots = match e.kind {
+                ElementKind::Diode { .. } => 1,
+                ElementKind::Bjt { .. } | ElementKind::Mosfet { .. } => 2,
+                _ => 0,
+            };
+            if slots > 0 {
+                lim.push(Some(n_lim));
+                n_lim += slots;
             } else {
-                diode.push(None);
+                lim.push(None);
             }
         }
         let nonlinear = c.elements().iter().any(|e| e.kind.is_nonlinear());
-        Self { n_nodes, size, branch, diode, n_diodes, nonlinear }
+        Self { n_nodes, size, branch, lim, n_lim, nonlinear }
     }
 }
 
@@ -192,6 +199,20 @@ impl System {
         }
         if let Some(r) = row(b) {
             self.rhs[r] += i;
+        }
+    }
+
+    /// Anschlussstrom eines Bauteils, der am Knoten `node` in das Bauteil fließt und von
+    /// der Spannung U(a) − U(b) abhängt: I = sign · g · (U_a − U_b) + …
+    fn vccs(&mut self, node: NodeId, sign: f64, a: NodeId, b: NodeId, g: f64) {
+        self.add(row(node), row(a), sign * g);
+        self.add(row(node), row(b), -sign * g);
+    }
+
+    /// Konstanter Anteil eines Anschlussstroms (in das Bauteil hinein).
+    fn inject(&mut self, node: NodeId, c: f64) {
+        if let Some(r) = row(node) {
+            self.rhs[r] -= c;
         }
     }
 
@@ -304,7 +325,7 @@ impl<'c> Simulator<'c> {
                     sys.current(*n, *p, ctx.src_scale * wave.value(ctx.t));
                 }
                 ElementKind::Diode { a, k, model } => {
-                    let di = self.layout.diode[ei].unwrap();
+                    let di = self.layout.lim[ei].unwrap();
                     let vraw = volt(x, *a) - volt(x, *k);
                     let (vd, lim) = pnjlim(vraw, dv[di], model.nvt(), model.vcrit());
                     limited |= lim;
@@ -314,16 +335,70 @@ impl<'c> Simulator<'c> {
                     sys.conductance(*a, *k, gd);
                     sys.current(*a, *k, id - gd * vd);
                 }
+                ElementKind::Bjt { c, b, e, model } => {
+                    let si = self.layout.lim[ei].unwrap();
+                    let p = model.polarity();
+                    let (vbe, l1) = pnjlim(p * (volt(x, *b) - volt(x, *e)), dv[si], VT_300K, model.vcrit());
+                    let (vbc, l2) = pnjlim(p * (volt(x, *b) - volt(x, *c)), dv[si + 1], VT_300K, model.vcrit());
+                    limited |= l1 || l2;
+                    dv[si] = vbe;
+                    dv[si + 1] = vbc;
+                    let op = model.eval(vbe, vbc);
+                    let cc = p * (op.ic - op.dic_dvbe * vbe - op.dic_dvbc * vbc);
+                    let cb = p * (op.ib - op.dib_dvbe * vbe - op.dib_dvbc * vbc);
+                    sys.vccs(*c, 1.0, *b, *e, op.dic_dvbe);
+                    sys.vccs(*c, 1.0, *b, *c, op.dic_dvbc);
+                    sys.inject(*c, cc);
+                    sys.vccs(*b, 1.0, *b, *e, op.dib_dvbe);
+                    sys.vccs(*b, 1.0, *b, *c, op.dib_dvbc);
+                    sys.inject(*b, cb);
+                    sys.vccs(*e, -1.0, *b, *e, op.dic_dvbe + op.dib_dvbe);
+                    sys.vccs(*e, -1.0, *b, *c, op.dic_dvbc + op.dib_dvbc);
+                    sys.inject(*e, -(cc + cb));
+                    sys.conductance(*b, *e, GMIN_JUNCTION);
+                    sys.conductance(*b, *c, GMIN_JUNCTION);
+                }
+                ElementKind::Mosfet { d, g, s, model } => {
+                    let si = self.layout.lim[ei].unwrap();
+                    let p = model.polarity();
+                    let (vgs, l1) = fetlim(p * (volt(x, *g) - volt(x, *s)), dv[si], 1.0);
+                    let (vds, l2) = fetlim(p * (volt(x, *d) - volt(x, *s)), dv[si + 1], 2.0);
+                    limited |= l1 || l2;
+                    dv[si] = vgs;
+                    dv[si + 1] = vds;
+                    let op = model.eval(vgs, vds);
+                    let cd = p * (op.id - op.gm * vgs - op.gds * vds);
+                    sys.vccs(*d, 1.0, *g, *s, op.gm);
+                    sys.vccs(*d, 1.0, *d, *s, op.gds);
+                    sys.inject(*d, cd);
+                    sys.vccs(*s, -1.0, *g, *s, op.gm);
+                    sys.vccs(*s, -1.0, *d, *s, op.gds);
+                    sys.inject(*s, -cd);
+                    sys.conductance(*d, *s, GMIN_JUNCTION);
+                }
             }
         }
         limited
     }
 
+    /// Startwerte der begrenzten Steuerspannungen aus dem Lösungsvektor.
     fn diode_voltages(&self, x: &[f64]) -> Vec<f64> {
-        let mut dv = vec![0.0; self.layout.n_diodes];
+        let mut dv = vec![0.0; self.layout.n_lim];
         for (ei, e) in self.circuit.elements().iter().enumerate() {
-            if let ElementKind::Diode { a, k, .. } = e.kind {
-                dv[self.layout.diode[ei].unwrap()] = volt(x, a) - volt(x, k);
+            let Some(si) = self.layout.lim[ei] else { continue };
+            match e.kind {
+                ElementKind::Diode { a, k, .. } => dv[si] = volt(x, a) - volt(x, k),
+                ElementKind::Bjt { c, b, e, model } => {
+                    let p = model.polarity();
+                    dv[si] = p * (volt(x, b) - volt(x, e));
+                    dv[si + 1] = p * (volt(x, b) - volt(x, c));
+                }
+                ElementKind::Mosfet { d, g, s, model } => {
+                    let p = model.polarity();
+                    dv[si] = p * (volt(x, g) - volt(x, s));
+                    dv[si + 1] = p * (volt(x, d) - volt(x, s));
+                }
+                _ => {}
             }
         }
         dv
@@ -455,7 +530,8 @@ impl<'c> Simulator<'c> {
         let x = self.solve_dc(0.0)?;
         let react = vec![Reactive::default(); self.circuit.elements().len()];
         let currents = self.element_currents(&x, &react, 0.0);
-        Ok(OpResult { probe: Probe::new(self.circuit), x, currents })
+        let term = self.terminal_currents(&x, &currents);
+        Ok(OpResult { probe: Probe::new(self.circuit), x, currents, term })
     }
 
     // ---------------------------------------------------------------------
@@ -650,6 +726,35 @@ impl<'c> Simulator<'c> {
                 ElementKind::VSource { .. } => -x[self.layout.branch[ei].unwrap()],
                 ElementKind::ISource { wave, .. } => wave.value(t),
                 ElementKind::Diode { a, k, model } => model.eval(volt(x, *a) - volt(x, *k)).0,
+                ElementKind::Bjt { c, b, e, model } => {
+                    let p = model.polarity();
+                    p * model.eval(p * (volt(x, *b) - volt(x, *e)), p * (volt(x, *b) - volt(x, *c))).ic
+                }
+                ElementKind::Mosfet { d, g, s, model } => {
+                    let p = model.polarity();
+                    p * model.eval(p * (volt(x, *g) - volt(x, *s)), p * (volt(x, *d) - volt(x, *s))).id
+                }
+            })
+            .collect()
+    }
+
+    /// Ströme in jeden Anschluss des Bauteils hinein (Summe = 0).
+    fn terminal_currents(&self, x: &[f64], main: &[f64]) -> Vec<Vec<f64>> {
+        self.circuit
+            .elements()
+            .iter()
+            .enumerate()
+            .map(|(ei, e)| match &e.kind {
+                ElementKind::Bjt { c, b, e, model } => {
+                    let p = model.polarity();
+                    let op = model.eval(p * (volt(x, *b) - volt(x, *e)), p * (volt(x, *b) - volt(x, *c)));
+                    let (ic, ib) = (p * op.ic, p * op.ib);
+                    vec![ic, ib, -(ic + ib)]
+                }
+                ElementKind::Mosfet { .. } => vec![main[ei], 0.0, -main[ei]],
+                // Quellen: Hauptstrom ist der abgegebene Strom (aus dem Pluspol heraus)
+                ElementKind::VSource { .. } | ElementKind::ISource { .. } => vec![-main[ei], main[ei]],
+                _ => vec![main[ei], -main[ei]],
             })
             .collect()
     }
@@ -664,7 +769,7 @@ impl<'c> Simulator<'c> {
 struct Probe {
     nodes: HashMap<String, NodeId>,
     elems: HashMap<String, usize>,
-    terminals: Vec<[NodeId; 2]>,
+    terminals: Vec<Vec<NodeId>>,
 }
 
 impl Probe {
@@ -696,6 +801,7 @@ pub struct OpResult {
     probe: Probe,
     x: Vec<f64>,
     currents: Vec<f64>,
+    term: Vec<Vec<f64>>,
 }
 
 impl OpResult {
@@ -711,12 +817,29 @@ impl OpResult {
 
     /// Spannung über einem Bauteil (erster minus zweiter Anschluss) in V.
     pub fn element_voltage(&self, elem: &str) -> Result<f64, SimError> {
-        let [a, b] = self.probe.terminals[self.probe.elem(elem)?];
+        let t = &self.probe.terminals[self.probe.elem(elem)?];
+        let (a, b) = (t[0], t[1]);
         Ok(volt(&self.x, a) - volt(&self.x, b))
     }
 
+    /// Ströme in jeden Anschluss hinein (Transistor: [I_C, I_B, I_E] bzw. [I_D, I_G, I_S]).
+    pub fn terminal_currents(&self, elem: &str) -> Result<Vec<f64>, SimError> {
+        Ok(self.term[self.probe.elem(elem)?].clone())
+    }
+
+    /// Spannungen an den Anschlüssen gegen Masse.
+    pub fn terminal_voltages(&self, elem: &str) -> Result<Vec<f64>, SimError> {
+        Ok(self.probe.terminals[self.probe.elem(elem)?].iter().map(|&n| volt(&self.x, n)).collect())
+    }
+
     /// Leistung in W: aufgenommen bei passiven Bauteilen, abgegeben bei Quellen.
+    /// Bei Transistoren: gesamte Verlustleistung Σ U_k · I_k.
     pub fn power(&self, elem: &str) -> Result<f64, SimError> {
+        let e = self.probe.elem(elem)?;
+        if self.probe.terminals[e].len() > 2 {
+            let v = self.terminal_voltages(elem)?;
+            return Ok(v.iter().zip(&self.term[e]).map(|(u, i)| u * i).sum());
+        }
         Ok(self.element_voltage(elem)? * self.current(elem)?)
     }
 }

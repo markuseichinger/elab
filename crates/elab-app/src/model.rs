@@ -202,6 +202,87 @@ impl GateType {
     }
 }
 
+/// Transistortypen mit Modellparametern.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TransistorType {
+    Bc547,
+    N2222,
+    Bc557,
+    N2n7000,
+    CmosN,
+    Bs250,
+    CmosP,
+}
+
+/// Grundart eines Transistors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransistorFamily {
+    Npn,
+    Pnp,
+    Nmos,
+    Pmos,
+}
+
+impl TransistorType {
+    pub const ALL: [TransistorType; 7] = [
+        TransistorType::Bc547,
+        TransistorType::N2222,
+        TransistorType::Bc557,
+        TransistorType::N2n7000,
+        TransistorType::CmosN,
+        TransistorType::Bs250,
+        TransistorType::CmosP,
+    ];
+
+    pub fn family(self) -> TransistorFamily {
+        use TransistorType::*;
+        match self {
+            Bc547 | N2222 => TransistorFamily::Npn,
+            Bc557 => TransistorFamily::Pnp,
+            N2n7000 | CmosN => TransistorFamily::Nmos,
+            Bs250 | CmosP => TransistorFamily::Pmos,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        use TransistorType::*;
+        match self {
+            Bc547 => "BC547",
+            N2222 => "2N2222",
+            Bc557 => "BC557",
+            N2n7000 => "2N7000",
+            CmosN => "CMOS-N",
+            Bs250 => "BS250",
+            CmosP => "CMOS-P",
+        }
+    }
+
+    pub fn is_bjt(self) -> bool {
+        matches!(self.family(), TransistorFamily::Npn | TransistorFamily::Pnp)
+    }
+
+    pub fn bjt(self) -> Option<elab_sim::BjtModel> {
+        use elab_sim::BjtModel as B;
+        match self {
+            TransistorType::Bc547 => Some(B::BC547),
+            TransistorType::N2222 => Some(B::N2222),
+            TransistorType::Bc557 => Some(B::BC557),
+            _ => None,
+        }
+    }
+
+    pub fn mos(self) -> Option<elab_sim::MosModel> {
+        use elab_sim::MosModel as M;
+        match self {
+            TransistorType::N2n7000 => Some(M::N2N7000),
+            TransistorType::CmosN => Some(M::CMOS_N),
+            TransistorType::Bs250 => Some(M::BS250),
+            TransistorType::CmosP => Some(M::CMOS_P),
+            _ => None,
+        }
+    }
+}
+
 /// Rolle eines Anschlusses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PinRole {
@@ -256,6 +337,20 @@ pub enum PartKind {
     },
     Ground,
     Probe,
+    // --- Phase 3 ---
+    /// Bipolar- oder Feldeffekttransistor
+    Transistor {
+        kind: TransistorType,
+    },
+    /// Potentiometer: Gesamtwiderstand und Stellung 0 … 1 = Anteil des Widerstands zwischen Schleifer und B
+    Potentiometer {
+        r: f64,
+        pos: f64,
+    },
+    /// Taster (Schließer): leitet, solange gedrückt
+    PushButton,
+    Voltmeter,
+    Ammeter,
     // --- Digital ---
     Gate {
         gate: GateType,
@@ -293,6 +388,8 @@ pub enum Shape {
     OnePin,
     /// Digitalbaustein: Eingänge links, Ausgänge rechts
     Logic,
+    /// Dreipol (Transistor, Potentiometer)
+    ThreePole,
 }
 
 const fn p(x: i32, y: i32) -> P {
@@ -322,13 +419,25 @@ impl PartKind {
                 "Passiv",
                 vec![
                     PartKind::Resistor { r: 1000.0 },
+                    PartKind::Potentiometer { r: 10e3, pos: 0.5 },
                     PartKind::Capacitor { c: 100e-9 },
                     PartKind::Inductor { l: 1e-3 },
                     PartKind::Lamp { v_nom: 12.0, p_nom: 5.0 },
                 ],
             ),
-            ("Halbleiter", vec![PartKind::Diode { kind: DiodeType::Si1N4148 }, PartKind::Led { color: LedColor::Rot }]),
-            ("Schalten & Messen", vec![PartKind::Switch { closed: false }, PartKind::Ground, PartKind::Probe]),
+            (
+                "Halbleiter",
+                vec![
+                    PartKind::Diode { kind: DiodeType::Si1N4148 },
+                    PartKind::Led { color: LedColor::Rot },
+                    PartKind::Transistor { kind: TransistorType::Bc547 },
+                    PartKind::Transistor { kind: TransistorType::Bc557 },
+                    PartKind::Transistor { kind: TransistorType::N2n7000 },
+                    PartKind::Transistor { kind: TransistorType::Bs250 },
+                ],
+            ),
+            ("Schalten", vec![PartKind::Switch { closed: false }, PartKind::PushButton]),
+            ("Messen", vec![PartKind::Ground, PartKind::Probe, PartKind::Voltmeter, PartKind::Ammeter]),
         ]
     }
 
@@ -349,6 +458,7 @@ impl PartKind {
         match self {
             DcVoltage { .. } | AcVoltage { .. } | SquareVoltage { .. } | CurrentSource { .. } => Shape::Source,
             Ground | Probe => Shape::OnePin,
+            Transistor { .. } | Potentiometer { .. } => Shape::ThreePole,
             Gate { .. } | LogicInput { .. } | Button | Clock { .. } | LogicHigh | LogicLed { .. } | DFlipFlop | JkFlipFlop | Counter4 | SevenSeg => {
                 Shape::Logic
             }
@@ -373,9 +483,13 @@ impl PartKind {
             CurrentSource { .. } => "I",
             Diode { .. } => "D",
             Led { .. } => "LED",
-            Switch { .. } => "S",
+            Switch { .. } | PushButton => "S",
             Ground => "GND",
             Probe => "M",
+            Transistor { .. } => "T",
+            Potentiometer { .. } => "P",
+            Voltmeter => "VM",
+            Ammeter => "AM",
             Gate { gate } => gate.label(),
             LogicInput { .. } | Button => "",
             Clock { .. } => "CLK",
@@ -404,6 +518,16 @@ impl PartKind {
             Switch { .. } => "Schalter",
             Ground => "Masse",
             Probe => "Messpunkt",
+            Transistor { kind } => match kind.family() {
+                TransistorFamily::Npn => "NPN-Transistor",
+                TransistorFamily::Pnp => "PNP-Transistor",
+                TransistorFamily::Nmos => "N-Kanal-MOSFET",
+                TransistorFamily::Pmos => "P-Kanal-MOSFET",
+            },
+            Potentiometer { .. } => "Potentiometer",
+            PushButton => "Taster",
+            Voltmeter => "Voltmeter",
+            Ammeter => "Amperemeter",
             Gate { gate } => match gate {
                 GateType::And => "UND-Gatter",
                 GateType::Or => "ODER-Gatter",
@@ -414,7 +538,7 @@ impl PartKind {
                 GateType::Xnor => "XNOR-Gatter",
             },
             LogicInput { .. } => "Logikschalter",
-            Button => "Taster",
+            Button => "Logiktaster",
             Clock { .. } => "Taktgeber",
             LogicHigh => "Pegel 1",
             LogicLed { .. } => "Logik-Anzeige",
@@ -438,8 +562,17 @@ impl PartKind {
         const JK: [P; 5] = [p(-3, -2), p(-3, 0), p(-3, 2), p(3, -2), p(3, 2)];
         const CTR: [P; 6] = [p(-3, -2), p(-3, 2), p(3, -3), p(3, -1), p(3, 1), p(3, 3)];
         const SEG: [P; 4] = [p(-3, -3), p(-3, -1), p(-3, 1), p(-3, 3)];
+        // Transistoren: Steueranschluss links; Emitter bzw. Source zeigt zur Versorgung
+        const T_TOP_C: [P; 3] = [p(-2, 0), p(1, -2), p(1, 2)]; // NPN: B, C oben, E unten · NMOS: G, D oben, S unten
+        const T_TOP_E: [P; 3] = [p(-2, 0), p(1, 2), p(1, -2)]; // PNP: B, C unten, E oben · PMOS: G, D unten, S oben
+        const POT: [P; 3] = [p(-2, 0), p(0, -2), p(2, 0)];
         use PartKind::*;
         match self {
+            Transistor { kind } => match kind.family() {
+                TransistorFamily::Npn | TransistorFamily::Nmos => &T_TOP_C,
+                TransistorFamily::Pnp | TransistorFamily::Pmos => &T_TOP_E,
+            },
+            Potentiometer { .. } => &POT,
             Gate { gate } if gate.inputs() == 1 => &GATE1,
             Gate { .. } => &GATE2,
             LogicInput { .. } | Button | Clock { .. } => &OUT,
@@ -480,6 +613,10 @@ impl PartKind {
             Diode { .. } | Led { .. } => &["Anode", "Kathode"],
             DcVoltage { .. } | AcVoltage { .. } | SquareVoltage { .. } | CurrentSource { .. } => &["+", "−"],
             Ground | Probe | LogicHigh => &["Anschluss"],
+            Transistor { kind } if kind.is_bjt() => &["B (Basis)", "C (Kollektor)", "E (Emitter)"],
+            Transistor { .. } => &["G (Gate)", "D (Drain)", "S (Source)"],
+            Potentiometer { .. } => &["A", "S (Schleifer)", "B"],
+            Voltmeter | Ammeter => &["+", "−"],
             Gate { gate } if gate.inputs() == 1 => &["A", "Y"],
             Gate { .. } => &["A", "B", "Y"],
             LogicInput { .. } | Button | Clock { .. } => &["Ausgang"],
@@ -513,8 +650,10 @@ impl PartKind {
             CurrentSource { i } => si(*i, "A"),
             Diode { kind } => kind.label().into(),
             Led { color } => format!("LED {}", color.label()),
-            Switch { closed } => (if *closed { "geschlossen" } else { "offen" }).into(),
+            Switch { closed } => (if *closed { "ein" } else { "aus" }).into(),
             Clock { freq } => si(*freq, "Hz"),
+            Transistor { kind } => kind.label().into(),
+            Potentiometer { r, pos } => format!("{} · {:.0} %", si(*r, "Ω"), pos * 100.0),
             _ => String::new(),
         }
     }
@@ -525,6 +664,9 @@ impl PartKind {
         match self {
             Ground => (-0.8, -0.2, 0.8, 1.3),
             Probe => (-0.2, -1.6, 2.6, 0.2),
+            Transistor { .. } => (-2.0, -2.0, 1.6, 2.0),
+            Potentiometer { .. } => (-2.0, -2.0, 2.0, 0.9),
+            Voltmeter | Ammeter => (-2.0, -1.1, 2.0, 1.1),
             Gate { gate } if gate.inputs() == 1 => (-3.0, -1.5, 3.0, 1.5),
             Gate { .. } => (-3.0, -2.0, 3.0, 2.0),
             LogicInput { .. } | Button | Clock { .. } => (-1.8, -1.0, 2.0, 1.0),
@@ -537,6 +679,16 @@ impl PartKind {
                 Shape::Source => (-1.0, -2.0, 1.0, 2.0),
                 _ => (-2.0, -0.9, 2.0, 0.9),
             },
+        }
+    }
+
+    /// Anschlusspaar, zwischen dem der Bauteilkörper liegt (für das Einfügen in Leitungen).
+    pub fn body_span(&self) -> Option<(usize, usize)> {
+        match self.shape() {
+            Shape::TwoPole | Shape::Source => Some((0, 1)),
+            _ if matches!(self, PartKind::Potentiometer { .. }) => Some((0, 2)),
+            Shape::Logic if self.local_pins().len() == 2 => Some((0, 1)),
+            _ => None,
         }
     }
 
@@ -776,10 +928,8 @@ impl Document {
             .iter()
             .filter_map(|p| {
                 let pins = p.pins();
-                if pins.len() != 2 {
-                    return None;
-                }
-                let (a, b) = (pins[0], pins[1]);
+                let (i, j) = p.kind.body_span()?;
+                let (a, b) = (pins[i], pins[j]);
                 if a.y == b.y {
                     Some((true, a.y, a.x.min(b.x), a.x.max(b.x)))
                 } else if a.x == b.x {
@@ -810,15 +960,16 @@ impl Document {
     }
 
     /// Würde ein Bauteil mit diesen Pins in eine bestehende Leitung eingefügt?
-    pub fn would_insert(&self, pins: &[P]) -> bool {
-        pins.len() == 2 && self.wires.iter().any(|w| w.contains(pins[0]) && w.contains(pins[1]))
+    pub fn would_insert(&self, kind: &PartKind, pins: &[P]) -> bool {
+        let Some((i, j)) = kind.body_span() else { return false };
+        self.wires.iter().any(|w| w.contains(pins[i]) && w.contains(pins[j]))
     }
 
     /// Drehung beim Absetzen: Liegt ein Zweipol quer über einer Leitung, wird er
     /// um 90° gedreht, damit er eingefügt wird.
     pub fn snap_rotation(&self, kind: &PartKind, pos: P, rot: u8) -> u8 {
         let pins = |r: u8| kind.local_pins().iter().map(|&q| pos + rot_i(q, r)).collect::<Vec<_>>();
-        if !self.would_insert(&pins(rot)) && self.would_insert(&pins(rot + 1)) {
+        if !self.would_insert(kind, &pins(rot)) && self.would_insert(kind, &pins(rot + 1)) {
             (rot + 1) % 4
         } else {
             rot
