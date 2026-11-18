@@ -90,8 +90,8 @@ impl Pen<'_> {
 pub struct Live {
     /// Helligkeit 0 … 1 für LED und Lampe
     pub glow: f32,
-    /// Logikpegel je Anschluss (leer, wenn nicht digital simuliert)
-    pub pins: Vec<Logic>,
+    /// Logikpegel je Anschluss (leer, wenn nicht digital simuliert; None = analog)
+    pub pins: Vec<Option<Logic>>,
     /// Taster gedrückt
     pub pressed: bool,
 }
@@ -295,14 +295,163 @@ pub fn draw(pen: &Pen, kind: &PartKind, live: Live) {
             pen.text((0.0, 0.0), if matches!(kind, PartKind::Voltmeter) { "V" } else { "A" }, 0.95, pen.color);
             plus(pen, (-1.45, -0.45));
         }
+        _ if kind.is_ic() => draw_ic(pen, kind, &live),
         _ => draw_digital(pen, kind, &live),
     }
 }
 
+/// Text, dessen führender Schrägstrich als Überstrich (Negation) gezeichnet wird.
+fn pin_label(pen: &Pen, at: (f32, f32), label: &str, size: f32, color: Color32) {
+    if let Some(rest) = label.strip_prefix('/') {
+        pen.text(at, rest, size, color);
+        let w = rest.chars().count() as f32 * size * 0.55;
+        pen.painter.line_segment(
+            [pen.pt(at.0 - w * 0.5, at.1 - size * 0.62), pen.pt(at.0 + w * 0.5, at.1 - size * 0.62)],
+            Stroke::new((pen.width * 0.7).max(1.0), color),
+        );
+    } else {
+        pen.text(at, label, size, color);
+    }
+}
+
+/// Echte Bausteine (Reiter „ICs“): Gatter mit Versorgung, OpAmp, Kastensymbole.
+fn draw_ic(pen: &Pen, kind: &PartKind, live: &Live) {
+    let body = Color32::from_rgb(26, 30, 40);
+    let txt = Color32::from_rgb(220, 222, 230);
+    let dim = Color32::from_rgb(150, 156, 170);
+    let pin = |k: usize| live.pins.get(k).copied().flatten();
+    let supply = |pen: &Pen, top: f32, bottom: f32, k: usize| {
+        pen.lead((0.0, -3.0), (0.0, top), None);
+        pen.lead((0.0, bottom), (0.0, 3.0), None);
+        if pen.s >= 9.0 {
+            pen.text((-0.75, -2.55), "VCC", 0.36, dim);
+            pen.text((-0.75, 2.55), "GND", 0.36, dim);
+        }
+        let _ = k;
+    };
+    match kind {
+        PartKind::GateIc { gate, .. } | PartKind::Gate { gate } => {
+            let n_in = gate.inputs();
+            let (h, ys): (f32, &[f32]) = if n_in == 1 { (1.5, &[0.0]) } else { (2.0, &[-1.0, 1.0]) };
+            for (k, &y) in ys.iter().enumerate() {
+                pen.lead((-3.0, y), (-1.5, y), pin(k));
+            }
+            let x_out = if gate.inverted() { 2.0 } else { 1.5 };
+            pen.lead((x_out, 0.0), (3.0, 0.0), pin(n_in));
+            supply(pen, -h, h, n_in + 1);
+            pen.rect(-1.5, -h, 1.5, h, body);
+            if gate.inverted() {
+                pen.disc((1.75, 0.0), 0.25, body);
+                pen.circle((1.75, 0.0), 0.25);
+            }
+            pen.text((0.0, -h + 0.75), gate.symbol(), 0.85, txt);
+            // Kerbe: Kennzeichen eines ICs
+            pen.disc((-1.1, h - 0.4), 0.13, dim);
+        }
+        PartKind::SchmittIc { .. } => {
+            pen.lead((-3.0, 0.0), (-1.5, 0.0), pin(0));
+            pen.lead((2.0, 0.0), (3.0, 0.0), pin(1));
+            supply(pen, -1.5, 1.5, 2);
+            pen.rect(-1.5, -1.5, 1.5, 1.5, body);
+            pen.disc((1.75, 0.0), 0.25, body);
+            pen.circle((1.75, 0.0), 0.25);
+            pen.text((0.0, -0.85), "1", 0.7, txt);
+            // Hysterese-Zeichen
+            pen.poly(&[(-0.75, 0.75), (0.2, 0.75), (0.2, 0.05), (0.55, 0.05)], false);
+            pen.poly(&[(-0.55, 0.75), (-0.2, 0.75), (-0.2, 0.05), (0.75, 0.05)], false);
+            pen.disc((-1.1, 1.1), 0.13, dim);
+        }
+        PartKind::OpAmp { .. } => {
+            pen.lead((-3.0, 1.0), (-2.0, 1.0), None);
+            pen.lead((-3.0, -1.0), (-2.0, -1.0), None);
+            pen.lead((2.0, 0.0), (3.0, 0.0), None);
+            pen.lead((0.0, -3.0), (0.0, -1.0), None);
+            pen.lead((0.0, 1.0), (0.0, 3.0), None);
+            let tri = [(-2.0, -2.0), (-2.0, 2.0), (2.0, 0.0)];
+            pen.fill(&tri, body);
+            pen.poly(&tri, true);
+            pen.text((-1.45, -1.0), "−", 0.8, txt);
+            pen.text((-1.45, 1.0), "+", 0.8, txt);
+            if pen.s >= 9.0 {
+                pen.text((-0.5, -2.65), "V+", 0.38, dim);
+                pen.text((-0.5, 2.65), "V−", 0.38, dim);
+            }
+        }
+        _ => {
+            let Some(sides) = kind.ic_sides() else { return };
+            let (x0, y0, x1, y1) = sides.body();
+            let pins = sides.pins();
+            let names = sides.names();
+            let (nl, nr, nt) = (sides.left.len(), sides.right.len(), sides.top.len());
+            for (k, p) in pins.iter().enumerate() {
+                let (px, py) = (p.x as f32, p.y as f32);
+                let edge = if k < nl {
+                    (x0, py)
+                } else if k < nl + nr {
+                    (x1, py)
+                } else if k < nl + nr + nt {
+                    (px, y0)
+                } else {
+                    (px, y1)
+                };
+                pen.lead((px, py), edge, pin(k));
+            }
+            pen.rect(x0, y0, x1, y1, body);
+            pen.disc((x0 + 0.35, y0 + 0.35), 0.13, dim);
+            if pen.s < 9.0 {
+                // Palettenkachel: nur die Form
+                return;
+            }
+            let sz = 0.46;
+            for (k, p) in pins.iter().enumerate() {
+                let name = names[k];
+                let w = name.trim_start_matches('/').chars().count() as f32 * sz * 0.55;
+                let (px, py) = (p.x as f32, p.y as f32);
+                let at = if k < nl {
+                    (x0 + 0.3 + w * 0.5, py)
+                } else if k < nl + nr {
+                    (x1 - 0.3 - w * 0.5, py)
+                } else if k < nl + nr + nt {
+                    (px, y0 + 0.45)
+                } else {
+                    (px, y1 - 0.45)
+                };
+                // Takteingang: Dreieck
+                if name == "C" && k < nl {
+                    pen.poly(&[(x0, py - 0.35), (x0 + 0.35, py), (x0, py + 0.35)], false);
+                    pin_label(pen, (at.0 + 0.3, at.1), name, sz, txt);
+                } else {
+                    pin_label(pen, at, name, sz, txt);
+                }
+            }
+            let title = kind.ic_type().unwrap_or_default();
+            let short = match kind {
+                PartKind::Adc4 => "ADC",
+                PartKind::Dac4 => "DAC",
+                _ => title.as_str(),
+            };
+            // Titel in der Mitte, weg von Anschlussbeschriftungen in derselben Zeile
+            let row_used = |range: std::ops::Range<usize>| pins[range].iter().any(|p| p.y == 0);
+            let dx = if row_used(0..nl) { 0.7 } else { 0.0 } - if row_used(nl..nl + nr) { 0.7 } else { 0.0 };
+            pen.text(((x0 + x1) * 0.5 + dx, (y0 + y1) * 0.5), short, 0.5, ACCENT_IC);
+            // Zählerstand
+            if let PartKind::CounterIc { .. } = kind {
+                let bits: Vec<Option<Logic>> = (0..4).map(|k| pin(2 + k)).collect();
+                if bits.iter().all(|b| matches!(b, Some(Logic::L0) | Some(Logic::L1))) {
+                    let n: u8 = (0..4).filter(|&k| bits[k] == Some(Logic::L1)).map(|k| 1 << k).sum();
+                    pen.text((0.0, 1.6), &n.to_string(), 0.9, Color32::from_rgb(120, 220, 90));
+                }
+            }
+        }
+    }
+}
+
+const ACCENT_IC: Color32 = Color32::from_rgb(255, 170, 70);
+
 /// IEC-Schaltzeichen der Digitalbausteine.
 fn draw_digital(pen: &Pen, kind: &PartKind, live: &Live) {
     let body = Color32::from_rgb(28, 30, 36);
-    let pin = |k: usize| live.pins.get(k).copied();
+    let pin = |k: usize| live.pins.get(k).copied().flatten();
     let txt = Color32::from_rgb(220, 222, 230);
     match kind {
         PartKind::Gate { gate } => {

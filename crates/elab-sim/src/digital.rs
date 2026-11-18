@@ -136,10 +136,14 @@ pub enum CompKind {
     JkFlipFlop,
     /// 4-Bit-Binärzähler. Eingänge C (Takt), R (Reset, asynchron); Ausgänge Q0…Q3
     Counter4,
+    /// Steuerlogik des Timers 555: Eingänge S (Trigger-Komparator), R (Schwellen-
+    /// Komparator), /RESET; Ausgänge Q (Ausgang) und Q (Entladetransistor sperrt bei 1).
+    /// S hat Vorrang vor R, /RESET vor allem.
+    Latch555,
 }
 
 /// Ein Baustein mit seinen Anschlüssen (Netznummern).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Comp {
     pub kind: CompKind,
     pub inputs: Vec<usize>,
@@ -340,6 +344,21 @@ impl DigitalSim {
                 self.state[c].q = Some(q);
                 vec![q, q.not()]
             }
+            CompKind::Latch555 => {
+                let (set, reset, nreset) = (self.read(c, 0), self.read(c, 1), self.read(c, 2));
+                let mut q = self.state[c].q.unwrap_or(Logic::L0);
+                if nreset == Logic::L0 {
+                    q = Logic::L0;
+                } else if set == Logic::L1 {
+                    q = Logic::L1;
+                } else if reset == Logic::L1 {
+                    q = Logic::L0;
+                } else if set == Logic::X || reset == Logic::X || nreset == Logic::X {
+                    q = if q == Logic::L0 && set == Logic::X || q == Logic::L1 && (reset == Logic::X || nreset == Logic::X) { Logic::X } else { q };
+                }
+                self.state[c].q = Some(q);
+                vec![q, q]
+            }
             CompKind::Counter4 => {
                 let (clk, reset) = (self.read(c, 0), self.read(c, 1));
                 if reset == Logic::L1 {
@@ -435,6 +454,11 @@ impl DigitalSim {
         for r in self.readers[n].clone() {
             self.schedule(r);
         }
+    }
+
+    /// Zeitpunkt (ns) des nächsten anstehenden Ereignisses.
+    pub fn next_event_time(&self) -> Option<u64> {
+        self.queue.peek().map(|Reverse((t, _, _))| *t)
     }
 
     /// Pegel eines Netzes.

@@ -48,8 +48,8 @@ pub enum Cmd {
     Release,
     /// Reiter der unteren Leiste: scope, analyzer, truth
     Panel(String),
-    /// Palettenreiter: digital on/off
-    Palette(bool),
+    /// Palettenreiter: 0 analog, 1 digital, 2 ICs
+    Palette(u8),
     /// Digitalsimulation anhalten
     Pause(bool),
     Quit,
@@ -103,7 +103,11 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
             "hold" => Cmd::Hold(f(1)?, f(2)?),
             "release" => Cmd::Release,
             "panel" => Cmd::Panel(t.get(1).unwrap_or(&"scope").to_string()),
-            "palette" => Cmd::Palette(t.get(1).is_some_and(|s| *s == "digital")),
+            "palette" => Cmd::Palette(match t.get(1).copied() {
+                Some("digital") => 1,
+                Some("ic") | Some("ics") => 2,
+                _ => 0,
+            }),
             "pause" => Cmd::Pause(on(1)),
             "quit" => Cmd::Quit,
             other => return Err(format!("Zeile {}: unbekannter Befehl {other}", ln + 1)),

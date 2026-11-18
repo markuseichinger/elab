@@ -49,6 +49,14 @@ pub enum Topic {
     PushButton,
     Voltmeter,
     Ammeter,
+    // Phase 4
+    RealIc,
+    Families,
+    Schmitt,
+    Timer555,
+    OpAmp,
+    AdcDac,
+    RealTime,
 }
 
 pub struct Doc {
@@ -92,6 +100,11 @@ impl Topic {
             PartKind::PushButton => Topic::PushButton,
             PartKind::Voltmeter => Topic::Voltmeter,
             PartKind::Ammeter => Topic::Ammeter,
+            PartKind::GateIc { .. } | PartKind::DffIc { .. } | PartKind::CounterIc { .. } => Topic::RealIc,
+            PartKind::SchmittIc { .. } => Topic::Schmitt,
+            PartKind::Timer555 => Topic::Timer555,
+            PartKind::OpAmp { .. } => Topic::OpAmp,
+            PartKind::Adc4 | PartKind::Dac4 => Topic::AdcDac,
         }
     }
 
@@ -102,6 +115,9 @@ impl Topic {
     /// Themen zu Transistoren und Messgeräten.
     pub const TRANSISTORS: [Topic; 7] =
         [Topic::Bjt, Topic::Mosfet, Topic::TransistorSwitch, Topic::RealLogic, Topic::Potentiometer, Topic::Voltmeter, Topic::Ammeter];
+
+    /// Themen zu echten Bausteinen (Mixed-Signal).
+    pub const MIXED: [Topic; 7] = [Topic::RealIc, Topic::Families, Topic::Schmitt, Topic::Timer555, Topic::OpAmp, Topic::AdcDac, Topic::RealTime];
 
     /// Themen der Digitaltechnik für das Inhaltsverzeichnis.
     pub const DIGITAL: [Topic; 10] = [
@@ -405,9 +421,106 @@ pub fn doc(t: Topic) -> Doc {
             typical: "Ein Ausgang, der nur 3,3 V liefert, ist für einen 5-V-CMOS-Eingang ein Grenzfall (unter 3,5 V). Dafür gibt es \
                       Pegelwandler oder 74HCT-Bausteine mit TTL-Schwellen.",
             watch: "Beispiel „CMOS-Inverter“: Stell das Poti langsam von 0 auf 100 % und lies die Voltmeter. Wo kippt der Ausgang, \
-                    und wie viel Querstrom zeigt das Amperemeter genau dort? Ausblick: In Phase 4 bekommen auch die Logikbausteine \
-                    Versorgungsanschlüsse und echte Schaltschwellen.",
-            related: &[Mosfet, Logic, Voltmeter],
+                    und wie viel Querstrom zeigt das Amperemeter genau dort? Die Bausteine im Reiter „ICs“ verhalten sich genauso: \
+                    Sie brauchen eine Versorgung und entscheiden über Schaltschwellen.",
+            related: &[Mosfet, Logic, RealIc, Families],
+        },
+        RealIc => Doc {
+            title: "Logik-ICs mit Versorgung",
+            what: "Die Bausteine im Reiter „ICs“ verhalten sich wie echte Chips auf dem Steckbrett. Sie haben VCC und GND und arbeiten \
+                   nur, wenn dort eine passende Spannung anliegt. Ein Eingang ist hochohmig: Er misst nur die Spannung und \
+                   entscheidet anhand von Schaltschwellen zwischen 0 und 1. Liegt die Spannung dazwischen, ist der Pegel undefiniert (X). \
+                   Dann gibt der Ausgang etwa die halbe Versorgung aus.\n\n\
+                   Ein Ausgang ist eine kleine Gegentaktstufe mit rund 50 Ω Innenwiderstand. Er schaltet nach VCC oder nach GND, \
+                   und der Strom für eine LED fließt wirklich durch den VCC-Anschluss des ICs. \
+                   Offene Eingänge sind bei CMOS verboten: Sie nehmen irgendeinen Pegel an. elab zeigt sie als X. \
+                   Taster brauchen deshalb einen Pull-down- oder Pull-up-Widerstand.",
+            math: "74HC an 5 V:\n  Eingang 0:  U_E < 1,5 V  (30 % von VCC)\n  Eingang 1:  U_E > 3,5 V  (70 % von VCC)\n  Ausgang:    ≈ 50 Ω nach VCC bzw. GND\n  Versorgung: 2 … 6 V, über 7 V zerstört\n  Laufzeit:   ≈ 10 ns",
+            typical: "Typnummern: 74HC00 NAND, 02 NOR, 04 NICHT, 08 UND, 32 ODER, 86 XOR, 14 Schmitt-Trigger, 74 D-Flipflop, \
+                      161 Zähler. Pull-down 10 kΩ, LED am Ausgang mit 330 Ω … 1 kΩ.",
+            watch: "Nimm im Beispiel „NAND-Baustein“ den Pull-down-Widerstand weg: Der Eingang wird X. Hänge den IC an 9 V: \
+                    Er geht kaputt. Die Pegel, die der IC an seinen Anschlüssen sieht, sind farbig markiert.",
+            related: &[Families, RealLogic, Schmitt, RealTime],
+        },
+        Families => Doc {
+            title: "Logikfamilien: HC, HCT, 3,3 V",
+            what: "Logikfamilien unterscheiden sich in Versorgung und Schaltschwellen. 74HC-Bausteine schalten relativ zu ihrer \
+                   Versorgung (30 % / 70 %). 74HCT-Bausteine haben feste TTL-Schwellen (0,8 V / 2,0 V) und laufen nur an 5 V.\n\n\
+                   Das ist wichtig, wenn verschiedene Spannungen zusammentreffen. Ein ESP32 oder Raspberry Pi gibt als 1 nur 3,3 V aus. \
+                   Ein 74HC an 5 V braucht aber mindestens 3,5 V, die 3,3 V liegen also im verbotenen Bereich. Ein 74HCT erkennt sie \
+                   sicher als 1 und setzt sie auf 5 V um: ein einfacher Pegelwandler. In die andere Richtung, von 5 V nach 3,3 V, \
+                   braucht man einen Spannungsteiler oder einen Baustein, der 5 V am Eingang verträgt.",
+            math: "Eingangsschwellen bei 5 V:\n  74HC:   0 < 1,5 V,  1 > 3,5 V\n  74HCT:  0 < 0,8 V,  1 > 2,0 V\n3,3-V-Ausgang: 1 ≈ 3,3 V\n  → für 74HC: undefiniert\n  → für 74HCT: sicher 1",
+            typical: "Die Familie stellst du im Inspektor eines Logik-ICs um. HCT-Bausteine sind die übliche Wahl als Pegelwandler \
+                      von 3,3-V-Mikrocontrollern zu 5-V-Logik, etwa für LED-Streifen (WS2812).",
+            watch: "Beispiel „3,3 V trifft 5 V“: Beide ICs bekommen dasselbe 3,3-V-Signal. Der HC zeigt X und gibt eine halbe \
+                    Spannung aus, der HCT schaltet sauber.",
+            related: &[RealIc, RealLogic, Schmitt],
+        },
+        Schmitt => Doc {
+            title: "Schmitt-Trigger (74HC14)",
+            what: "Ein Eingang mit zwei Schaltschwellen: Steigt die Spannung, schaltet er erst bei U_T+ um, fällt sie, erst bei U_T−. \
+                   Dazwischen behält er seinen Zustand (Hysterese). So werden langsame oder verrauschte Signale zu sauberen Flanken, \
+                   und es gibt keinen undefinierten Bereich.\n\n\
+                   Mit einem Widerstand vom Ausgang zurück auf einen Kondensator am Eingang entsteht ein Oszillator: Der Kondensator lädt \
+                   bis U_T+, der Ausgang kippt, der Kondensator entlädt bis U_T−, und so weiter.",
+            math: "74HC14 an 5 V:\n  U_T+ ≈ 2,8 V,  U_T− ≈ 1,8 V\nRC-Oszillator:\n  T = R·C · (ln((U−U_T−)/(U−U_T+)) + ln(U_T+/U_T−))\n    ≈ 0,8 · R·C",
+            typical: "Taster entprellen, Sensorsignale aufbereiten, einfache Taktgeber. Mit 47 kΩ und 10 µF blinkt eine LED etwa zweimal pro Sekunde.",
+            watch: "Beispiel „Schmitt-Trigger-Oszillator“: Setz einen Messpunkt an den Kondensator. Seine Spannung pendelt genau zwischen \
+                    den beiden Schwellen.",
+            related: &[RealIc, Capacitor, Timer555],
+        },
+        Timer555 => Doc {
+            title: "Timer 555",
+            what: "Der 555 ist einer der bekanntesten ICs. Innen teilen drei 5-kΩ-Widerstände die Versorgung in Drittel. Zwei Komparatoren \
+                   vergleichen TRIG mit ⅓ und THR mit ⅔ der Versorgung und setzen ein Flipflop: TRIG unter ⅓ → Ausgang 1, \
+                   THR über ⅔ → Ausgang 0. Ist der Ausgang 0, schaltet ein Transistor DIS nach Masse.\n\n\
+                   Als Blinker (astabil) lädt der Kondensator über R_A und R_B, bis THR ⅔ erreicht. Dann entlädt DIS ihn über R_B bis ⅓, \
+                   und alles beginnt von vorn. /RES auf 0 hält den Timer an.",
+            math: "Astabil:\n  t_high = 0,693 · (R_A + R_B) · C\n  t_low  = 0,693 · R_B · C\n  f = 1,44 / ((R_A + 2·R_B) · C)\nVersorgung 4,5 … 16 V\nAusgang 1 ≈ VCC − 1,7 V",
+            typical: "Blinker, Tongeneratoren, Verzögerungen. R_A ≥ 1 kΩ, sonst fließt beim Entladen zu viel Strom durch DIS.",
+            watch: "Beispiel „555-Blinker“: Ändere C oder R_B und vergleiche die Blinkfrequenz mit der Formel. Im Oszilloskop sieht man \
+                    die Sägezahnspannung am Kondensator zwischen 3 V und 6 V (bei 9 V).",
+            related: &[Capacitor, Schmitt, RealTime],
+        },
+        OpAmp => Doc {
+            title: "Operationsverstärker",
+            what: "Ein OpAmp verstärkt die Differenz zwischen + und − enorm (100 000-fach). Allein schaltet er deshalb wie ein Komparator: \
+                   Ausgang hoch, wenn + größer ist, sonst tief. Mit Gegenkopplung (Ausgang über einen Widerstand zurück auf −) regelt er \
+                   seinen Ausgang so, dass + und − gleich groß sind. Dann bestimmen nur die Widerstände die Verstärkung.\n\n\
+                   Der Ausgang kann nur innerhalb der Versorgung schwingen. Ein LM358 kommt nicht ganz an V+ heran (etwa 1,5 V darunter), \
+                   ein Rail-to-Rail-OpAmp wie der MCP6001 schon.",
+            math: "Nichtinvertierend:  U_aus = U_ein · (1 + R2/R1)\nInvertierend:       U_aus = −U_ein · R2/R1\nSpannungsfolger:    U_aus = U_ein\nGrenze:  V− … V+ (LM358: bis V+ − 1,5 V)",
+            typical: "Sensorverstärker, Filter, Pufferstufen, Komparatoren. Einfache Versorgung 5 V oder 12 V, symmetrisch ±12 V.",
+            watch: "Beispiel „OpAmp-Verstärker“: Dreh das Poti hoch. Ab einem Punkt steigt die Ausgangsspannung nicht mehr, der OpAmp ist \
+                    übersteuert. Mit dem MCP6001 (im Inspektor) kommt er näher an die Versorgung.",
+            related: &[Voltmeter, Potentiometer, AdcDac],
+        },
+        AdcDac => Doc {
+            title: "A/D- und D/A-Umsetzer",
+            what: "Ein A/D-Umsetzer (ADC) macht aus einer Spannung eine Zahl: Er teilt den Bereich 0 … U_REF in 2ⁿ Stufen und gibt die \
+                   Nummer der Stufe binär aus. Ein D/A-Umsetzer (DAC) macht es umgekehrt. Dieser DAC ist ein R-2R-Widerstandsnetz: Jedes Bit \
+                   schaltet einen Zweig nach REF oder GND, der Ausgang liefert U_REF · Code / 16 mit 10 kΩ Innenwiderstand.\n\n\
+                   Mit 4 Bit gibt es nur 16 Stufen. Zwischen zwei Stufen geht Information verloren: der Quantisierungsfehler.",
+            math: "Code = ⌊16 · U_ein / U_REF⌋  (0 … 15)\nU_aus = U_REF · Code / 16\nStufe (LSB) = U_REF / 16 = 0,3125 V bei 5 V",
+            typical: "Mikrocontroller wie der ESP32 haben 12-Bit-ADCs (4096 Stufen) und 8-Bit-DACs. Der unbelastete DAC-Ausgang braucht \
+                      oft einen Spannungsfolger (OpAmp), damit eine Last die Spannung nicht einbrechen lässt.",
+            watch: "Beispiel „ADC und DAC“: Dreh das Poti langsam. Die LEDs zählen binär, das Voltmeter am DAC springt in Stufen.",
+            related: &[OpAmp, Counter, RealIc],
+        },
+        RealTime => Doc {
+            title: "Echtzeitsimulation",
+            what: "Sobald ein IC in der Schaltung ist, rechnet elab den zeitlichen Verlauf fortlaufend in Echtzeit, statt nur einen \
+                   Arbeitspunkt zu bestimmen. Beim Start ist alles wie beim Einschalten: Kondensatoren sind leer, Flipflops stehen auf 0.\n\n\
+                   Analogteil und Logik laufen dabei gemeinsam: Jeder Eingang prüft seine Spannung, und wenn sie eine Schaltschwelle \
+                   kreuzt, sucht die Simulation den genauen Zeitpunkt. Dann schaltet die Logik mit ihrer Laufzeit, und der neue \
+                   Ausgangspegel wirkt sofort wieder auf die Schaltung.",
+            math: "",
+            typical: "Mit dem Tempo-Regler in der Statuszeile läuft die Zeit langsamer (Zeitlupe) oder schneller. ↺ schaltet neu ein. \
+                      Das Oszilloskop zeichnet die ersten Augenblicke nach dem Einschalten auf.",
+            watch: "Schnelle Vorgänge (kHz) sind in Echtzeit nur ein Flimmern. Stell das Tempo auf 0,01× und schau zu, wie die Spannung am \
+                    Kondensator eines Oszillators steigt und fällt.",
+            related: &[RealIc, Timer555, Scope],
         },
         Potentiometer => Doc {
             title: "Potentiometer",

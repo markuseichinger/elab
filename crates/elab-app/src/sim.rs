@@ -3,7 +3,7 @@
 use crate::model::{Document, PartKind};
 use crate::netlist::{Netlist, SimRole};
 use elab_sim::digital::{CompKind, DigitalSim, Logic};
-use elab_sim::{Simulator, TranOptions};
+use elab_sim::{MixedSim, OpResult, Simulator, TranOptions};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -75,6 +75,14 @@ pub fn operating_point(nl: &Netlist) -> Result<OpView, String> {
     let t0 = Instant::now();
     let mut sim = Simulator::new(&nl.circuit).map_err(|e| e.to_string())?;
     let op = sim.operating_point().map_err(|e| e.to_string())?;
+    let mut v = view(nl, &op);
+    v.millis = t0.elapsed().as_secs_f64() * 1e3;
+    v.newton = sim.stats.newton_iterations;
+    Ok(v)
+}
+
+/// Bereitet einen berechneten Zustand (Arbeitspunkt oder Momentaufnahme) für die Anzeige auf.
+pub fn view(nl: &Netlist, op: &OpResult) -> OpView {
     let net_v: Vec<Option<f64>> = nl
         .nets
         .iter()
@@ -82,7 +90,8 @@ pub fn operating_point(nl: &Netlist) -> Result<OpView, String> {
             if n.is_gnd {
                 Some(0.0)
             } else if n.reachable {
-                op.voltage(&n.name).ok()
+                // Rechenrauschen (pV über offene Schalter) als 0 anzeigen
+                op.voltage(&n.name).ok().map(|v| if v.abs() < 1e-7 { 0.0 } else { v })
             } else {
                 None
             }
@@ -132,6 +141,35 @@ pub fn operating_point(nl: &Netlist) -> Result<OpView, String> {
                 };
                 PartValues { u: vds, i: pol * tc[0], p: op.power(name).unwrap_or(0.0), ctrl_u: vgs, ctrl_i: 0.0, region: Some(region) }
             }
+            Some(SimRole::OpAmp) => {
+                let tv = op.terminal_voltages(name).unwrap_or_default(); // +, −, Ausgang, V+, V−
+                let tc = op.terminal_currents(name).unwrap_or_default();
+                let p: f64 = tv.iter().zip(&tc).map(|(u, i)| u * i).sum();
+                PartValues { u: tv[2], i: op.current(name).unwrap_or(0.0), p, ctrl_u: tv[0] - tv[1], ctrl_i: tc[3], region: None }
+            }
+            Some(SimRole::Ic { vcc, gnd }) => {
+                // Alle Innenteile heißen „Name:…“: Versorgungsstrom und Verlustleistung aufsummieren
+                let pn = &nl.pin_nets[&id];
+                let node = |k: usize| nl.circuit.find_node(&nl.nets[pn[k]].name);
+                let (nv, ng) = (node(*vcc), node(*gnd));
+                let prefix = format!("{name}:");
+                let (mut i, mut p) = (0.0, 0.0);
+                for e in op.element_names().filter(|e| e.starts_with(&prefix)) {
+                    let (tn, tc, tv) = (
+                        op.terminal_nodes(e).unwrap_or_default(),
+                        op.terminal_currents(e).unwrap_or_default(),
+                        op.terminal_voltages(e).unwrap_or_default(),
+                    );
+                    for k in 0..tn.len() {
+                        if Some(tn[k]) == nv {
+                            i += tc[k];
+                        }
+                        p += tv[k] * tc[k];
+                    }
+                }
+                let u = nv.map_or(0.0, |n| op.node_voltage(n)) - ng.map_or(0.0, |n| op.node_voltage(n));
+                PartValues { u, i, p, ..Default::default() }
+            }
         };
         parts.insert(id, v);
     }
@@ -143,7 +181,21 @@ pub fn operating_point(nl: &Netlist) -> Result<OpView, String> {
             }
         }
     }
-    Ok(OpView { net_v, parts, millis: t0.elapsed().as_secs_f64() * 1e3, newton: sim.stats.newton_iterations })
+    OpView { net_v, parts, millis: 0.0, newton: 0 }
+}
+
+/// Startet die Simulation einer gemischten Schaltung (Einschalten bei t = 0).
+pub fn mixed_sim(nl: &Netlist, h_max: f64) -> Result<MixedSim, String> {
+    if let Some(e) = &nl.error {
+        return Err(e.clone());
+    }
+    let m = nl.mixed.as_ref().ok_or("Keine gemischte Schaltung")?;
+    MixedSim::new(nl.circuit.clone(), m.spec.clone(), h_max).map_err(|e| e.to_string())
+}
+
+/// Momentaufnahme einer laufenden gemischten Simulation für die Anzeige.
+pub fn mixed_view(nl: &Netlist, ms: &MixedSim) -> OpView {
+    view(nl, &ms.snapshot())
 }
 
 /// Eine Kurve im Oszilloskop.
@@ -175,8 +227,16 @@ pub fn record(doc: &Document, nl: &Netlist, t_stop: f64) -> Result<ScopeData, St
         return Err(e.clone());
     }
     let t0 = Instant::now();
-    let mut sim = Simulator::new(&nl.circuit).map_err(|e| e.to_string())?;
-    let res = sim.transient(&TranOptions::new(t_stop, t_stop / 1000.0)).map_err(|e| e.to_string())?;
+    let (res, steps) = if let Some(m) = &nl.mixed {
+        // Gemischte Schaltung: ab dem Einschalten
+        let mut ms = MixedSim::new(nl.circuit.clone(), m.spec.clone(), t_stop / 1000.0).map_err(|e| e.to_string())?;
+        let res = ms.run(t_stop).map_err(|e| e.to_string())?;
+        (res, ms.stats().accepted_steps)
+    } else {
+        let mut sim = Simulator::new(&nl.circuit).map_err(|e| e.to_string())?;
+        let res = sim.transient(&TranOptions::new(t_stop, t_stop / 1000.0)).map_err(|e| e.to_string())?;
+        (res, sim.stats.accepted_steps)
+    };
     let mut traces = Vec::new();
     for (id, name, color_idx) in probes(doc) {
         let Some(&net) = nl.pin_nets.get(&id).and_then(|v| v.first()) else { continue };
@@ -193,7 +253,7 @@ pub fn record(doc: &Document, nl: &Netlist, t_stop: f64) -> Result<ScopeData, St
         };
         traces.push(Trace { name, color_idx, pts: res.time.iter().zip(v).map(|(&t, v)| [t, v]).collect() });
     }
-    Ok(ScopeData { traces, t_stop, millis: t0.elapsed().as_secs_f64() * 1e3, steps: sim.stats.accepted_steps })
+    Ok(ScopeData { traces, t_stop, millis: t0.elapsed().as_secs_f64() * 1e3, steps })
 }
 
 // ---------------------------------------------------------------------------

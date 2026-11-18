@@ -1,0 +1,63 @@
+# Logik-IC per Drag & Drop: NAND-Baustein mit 5-V-Versorgung, Taster mit Pull-down
+# am Eingang A, Eingang B fest auf 5 V, LED am Ausgang. Ohne Taster leuchtet die LED,
+# mit Taster nicht. Danach Pull-down löschen: Eingang A hängt offen (X).
+# Aufruf: cargo run --release -- --script crates/elab-app/ui-tests/ic_bauen.txt
+
+wait 10
+cmd N
+wait 3
+palette ic
+wait 3
+paldrag Gleichspannung -4 0
+paldrag Masse -4 9
+paldrag NAND-Baustein 12 0
+tool wire
+click -4 -2
+click -4 -7
+click 12 -7
+click 12 -3
+tool wire
+click -4 2
+click -4 9
+tool wire
+click -4 9
+dblclick 17 9
+tool wire
+click 12 3
+click 12 9
+tool wire
+click 3 -7
+click 3 -1
+click 9 -1
+tool wire
+click 3 -1
+click 3 9
+tool wire
+click 9 1
+click 7 1
+click 7 -7
+tool wire
+click 15 0
+click 17 0
+click 17 9
+tool select
+wait 3
+paldrag Taster 3 -4
+paldrag Widerstand 3 5
+paldrag Widerstand 17 3
+paldrag Leuchtdiode 17 7
+wait 10
+dump ui-out/ic_aus.json
+hold 3 -4
+wait 10
+dump ui-out/ic_ein.json
+fit
+wait 4
+shot ui-out/ic_ein.ppm
+release
+wait 5
+click 3 5
+key Delete
+wait 10
+dump ui-out/ic_offen.json
+quit

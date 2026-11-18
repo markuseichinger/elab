@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Zufallstest der Oberfläche: erzeugt ein Testskript mit vielen schnellen Aktionen
-(Drag & Drop aus beiden Paletten, Klicks, Drähte, Drehen, Löschen, Undo/Redo, Taster,
+(Drag & Drop aus allen drei Paletten, Klicks, Drähte, Drehen, Löschen, Undo/Redo, Taster,
 Messgeräte-Reiter). Hat 2026-11 einen Absturz beim Platzieren mehrerer Bauteile gefunden.
 
     python3 crates/elab-app/ui-tests/zufallstest.py 1 140 > /tmp/z.txt
@@ -14,7 +14,9 @@ parts=["Gleichspannung","Wechselspannung","Rechteckspannung","Stromquelle","Wide
        "Spule","Glühlampe","Diode","Leuchtdiode","NPN-Transistor","PNP-Transistor","N-Kanal-MOSFET","P-Kanal-MOSFET",
        "Schalter","Taster","Masse","Messpunkt","Voltmeter","Amperemeter",
        "UND-Gatter","ODER-Gatter","NICHT-Gatter","NAND-Gatter","NOR-Gatter","XOR-Gatter","XNOR-Gatter","Logikschalter",
-       "Logiktaster","Taktgeber","Pegel 1","Logik-Anzeige","7-Segment-Anzeige","D-Flipflop","JK-Flipflop","4-Bit-Zähler"]
+       "Logiktaster","Taktgeber","Pegel 1","Logik-Anzeige","7-Segment-Anzeige","D-Flipflop","JK-Flipflop","4-Bit-Zähler",
+       "NAND-Baustein","NOR-Baustein","UND-Baustein","ODER-Baustein","XOR-Baustein","NICHT-Baustein","Schmitt-Trigger",
+       "D-Flipflop-IC","Zähler-IC","Operationsverstärker","Timer 555","A/D-Umsetzer","D/A-Umsetzer"]
 g=lambda: (r.randint(-8,22), r.randint(-8,12))
 out=["wait 10","cmd N","wait 3"]
 for i in range(n):

@@ -90,6 +90,32 @@ impl Waveform {
 
     /// Fügt alle Knickstellen im Intervall `(0, t_stop]` zu `out` hinzu.
     /// An diesen Stellen muss die Transientenanalyse exakt einen Zeitschritt setzen.
+    /// Knickstellen im Intervall (t0, t1] – auch für sehr lange Laufzeiten effizient.
+    pub fn breakpoints_between(&self, t0: f64, t1: f64, out: &mut Vec<f64>) {
+        if let Waveform::Pulse { delay, rise, fall, width, period, .. } = self {
+            let periodic = *period > 0.0 && period.is_finite();
+            if periodic && t0 > *delay + period {
+                let rise = rise.max(MIN_EDGE);
+                let fall = fall.max(MIN_EDGE);
+                let corners = [0.0, rise, rise + width, rise + width + fall];
+                let mut start = delay + ((t0 - delay) / period).floor().max(0.0) * period - period;
+                while start <= t1 {
+                    for c in corners {
+                        let t = start + c;
+                        if t > t0 && t <= t1 {
+                            out.push(t);
+                        }
+                    }
+                    start += period;
+                }
+                return;
+            }
+        }
+        let mut all = Vec::new();
+        self.breakpoints(t1, &mut all);
+        out.extend(all.into_iter().filter(|&t| t > t0));
+    }
+
     pub fn breakpoints(&self, t_stop: f64, out: &mut Vec<f64>) {
         match self {
             Waveform::Dc(_) => {}

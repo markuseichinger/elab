@@ -4,9 +4,9 @@
 //! (elektrisch ein Knoten). Aus den Netzen und Bauteilen entsteht die
 //! `elab_sim::Circuit`, die der Simulator rechnet.
 
-use crate::model::{Document, PartKind, PinRole, P};
-use elab_sim::digital::{Comp, CompKind, Logic};
-use elab_sim::{Circuit, ElementKind, SimError, Waveform};
+use crate::model::{Document, IcPin, Part, PartKind, PinRole, P};
+use elab_sim::digital::{Comp, CompKind, GateKind, Logic};
+use elab_sim::{Circuit, DriveSrc, DriverLink, ElementKind, Level, MixedSpec, NodeId, ObsKind, Observer, PowerGroup, SimError, Waveform};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Informationen zu einem Netz.
@@ -38,8 +38,10 @@ pub struct Netlist {
     pub roles: HashMap<u32, SimRole>,
     /// Voltmeter (kein Simulator-Element, sie messen nur)
     pub voltmeters: Vec<u32>,
-    /// Digitalteil der Schaltung (falls Digitalbausteine vorhanden)
+    /// Digitalteil einer rein digitalen Schaltung
     pub digital: Option<DigitalNetlist>,
+    /// Gemischte Schaltung: Logik mit Versorgung, an Analogteil gekoppelt
+    pub mixed: Option<MixedNetlist>,
     pub error: Option<String>,
 }
 
@@ -55,6 +57,245 @@ pub enum SimRole {
     Mos {
         model: elab_sim::MosModel,
     },
+    /// Baustein mit Versorgung: Anschlussnummern von VCC und GND
+    Ic {
+        vcc: usize,
+        gnd: usize,
+    },
+    OpAmp,
+}
+
+/// Woher der Logikpegel an einem Anschluss stammt (für die Anzeige).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PinSrc {
+    None,
+    /// Eingang: was der Baustein liest (Beobachter, Bit)
+    Obs(usize, usize),
+    /// Ausgang: Digitalnetz, das die Ausgangsstufe steuert
+    Net(usize),
+}
+
+/// Gemischte Schaltung: Spezifikation für [`elab_sim::MixedSim`] und Zuordnungen.
+#[derive(Clone, Debug)]
+pub struct MixedNetlist {
+    pub spec: MixedSpec,
+    /// Netz wird rein digital betrieben (Index wie `nets`, ohne Spannung)
+    pub digital_net: Vec<bool>,
+    /// Eingabebaustein je Logikschalter/Taster
+    pub comp_of: HashMap<u32, usize>,
+    /// Pegelquellen der Anschlüsse von ICs und Logikbausteinen an Analognetzen
+    pub pin_src: HashMap<u32, Vec<PinSrc>>,
+    /// Versorgungsgruppe je IC
+    pub group_of: HashMap<u32, usize>,
+}
+
+/// Baut die Kopplung von Analog- und Digitalteil auf.
+struct MixBuilder {
+    spec: MixedSpec,
+    comp_of: HashMap<u32, usize>,
+    pin_src: HashMap<u32, Vec<PinSrc>>,
+    group_of: HashMap<u32, usize>,
+    vdd: Option<NodeId>,
+}
+
+/// Ausgangswiderstand von 74HC-Ausgängen bei 5 V.
+const R_OUT_HC: f64 = 50.0;
+/// Ausgangswiderstand der idealen Logikbausteine, wenn sie Analognetze treiben.
+const R_OUT_IDEAL: f64 = 20.0;
+
+impl MixBuilder {
+    fn new(n_nets: usize) -> Self {
+        Self {
+            spec: MixedSpec { n_nets, ..Default::default() },
+            comp_of: HashMap::new(),
+            pin_src: HashMap::new(),
+            group_of: HashMap::new(),
+            vdd: None,
+        }
+    }
+
+    fn net(&mut self) -> usize {
+        self.spec.n_nets += 1;
+        self.spec.n_nets - 1
+    }
+
+    fn comp(&mut self, kind: CompKind, inputs: Vec<usize>, outputs: Vec<usize>, delay: u64) -> usize {
+        self.spec.comps.push(Comp { kind, inputs, outputs, delay });
+        self.spec.comps.len() - 1
+    }
+
+    fn group(&mut self, name: &str, vcc: NodeId, gnd: NodeId, v_min: f64, v_max: f64) -> usize {
+        self.spec.groups.push(PowerGroup { name: name.into(), vcc, gnd, v_min, v_max });
+        self.spec.groups.len() - 1
+    }
+
+    /// Eingang: beobachtet eine Spannung und liefert je Bit ein Digitalnetz.
+    fn observe(&mut self, kind: ObsKind, bits: usize, group: Option<usize>, floating: Option<Logic>) -> (usize, Vec<usize>) {
+        let nets: Vec<usize> = (0..bits).map(|_| self.net()).collect();
+        let inputs: Vec<usize> = nets.iter().map(|&n| self.comp(CompKind::Input(Logic::X), vec![], vec![n], 0)).collect();
+        self.spec.observers.push(Observer { kind, inputs, group, floating });
+        (self.spec.observers.len() - 1, nets)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn drive(
+        &mut self,
+        c: &mut Circuit,
+        name: &str,
+        out: NodeId,
+        hi: NodeId,
+        lo: NodeId,
+        r: f64,
+        src: DriveSrc,
+        group: Option<usize>,
+        open_drain: bool,
+    ) -> Result<(), SimError> {
+        let elem = c.add(name, ElementKind::Driver { out, hi, lo, r })?;
+        self.spec.drivers.push(DriverLink { elem, src, group, open_drain });
+        Ok(())
+    }
+
+    /// Versorgungsknoten der idealen Logikbausteine (5 V).
+    fn vdd(&mut self, c: &mut Circuit) -> Result<NodeId, SimError> {
+        if let Some(v) = self.vdd {
+            return Ok(v);
+        }
+        let v = c.node("~vdd");
+        c.add("~VDD", ElementKind::VSource { p: v, n: 0, wave: Waveform::Dc(5.0) })?;
+        self.vdd = Some(v);
+        Ok(v)
+    }
+
+    /// Baut einen IC: Eingänge, Logikkern, Ausgangsstufen, Versorgung.
+    fn ic(&mut self, c: &mut Circuit, part: &Part, nodes: &[NodeId], floating: &[bool]) -> Result<Option<SimRole>, SimError> {
+        let name = &part.name;
+        let fl = |k: usize, v: Logic| floating[k].then_some(v);
+        let mut src = Vec::new();
+        let role = match &part.kind {
+            PartKind::GateIc { .. } | PartKind::SchmittIc { .. } | PartKind::DffIc { .. } | PartKind::CounterIc { .. } => {
+                let family = part.kind.family().unwrap();
+                let roles = part.kind.ic_pins();
+                let n_in = roles.iter().filter(|r| **r == IcPin::In).count();
+                let n_out = roles.iter().filter(|r| **r == IcPin::Out).count();
+                let (vcc, gnd) = (nodes[n_in + n_out], nodes[n_in + n_out + 1]);
+                let g = self.group(name, vcc, gnd, family.v_min(), 7.0);
+                self.group_of.insert(part.id, g);
+                let schmitt = matches!(part.kind, PartKind::SchmittIc { .. });
+                let (il, ih) = if schmitt { family.schmitt() } else { family.thresholds() };
+                let mut ins = Vec::new();
+                for (k, &node) in nodes.iter().enumerate().take(n_in) {
+                    let (oi, nets) = self.observe(ObsKind::Threshold { node, gnd, vcc, il, ih, schmitt }, 1, Some(g), fl(k, Logic::X));
+                    src.push(PinSrc::Obs(oi, 0));
+                    ins.push(nets[0]);
+                }
+                let outs: Vec<usize> = (0..n_out).map(|_| self.net()).collect();
+                let slow = if family == crate::model::LogicFamily::Hct { 2 } else { 0 };
+                match &part.kind {
+                    PartKind::GateIc { gate, .. } => {
+                        self.comp(CompKind::Gate(gate.to_sim()), ins, outs.clone(), 9 + slow);
+                    }
+                    PartKind::SchmittIc { .. } => {
+                        self.comp(CompKind::Gate(GateKind::Not), ins, outs.clone(), 12 + slow);
+                    }
+                    PartKind::DffIc { .. } => {
+                        self.comp(CompKind::DFlipFlop, ins, outs.clone(), 15 + slow);
+                    }
+                    _ => {
+                        // /MR ist low-aktiv: intern invertiert auf den Reset des Zählers
+                        let r = self.net();
+                        self.comp(CompKind::Gate(GateKind::Not), vec![ins[1]], vec![r], 0);
+                        self.comp(CompKind::Counter4, vec![ins[0], r], outs.clone(), 18 + slow);
+                    }
+                }
+                let pin_names = part.kind.pin_names();
+                for (k, &o) in outs.iter().enumerate() {
+                    let pin = n_in + k;
+                    self.drive(c, &format!("{name}:{}", pin_names[pin]), nodes[pin], vcc, gnd, R_OUT_HC, DriveSrc::Net(o), Some(g), false)?;
+                    src.push(PinSrc::Net(o));
+                }
+                src.extend([PinSrc::None, PinSrc::None]);
+                c.add(&format!("{name}:IQ"), ElementKind::Resistor { a: vcc, b: gnd, r: 10e6 })?;
+                Some(SimRole::Ic { vcc: n_in + n_out, gnd: n_in + n_out + 1 })
+            }
+            PartKind::Timer555 => {
+                let [trig, thr, ctrl, out, dis, vcc, res, gnd] = nodes[..] else { unreachable!() };
+                let g = self.group(name, vcc, gnd, 4.5, 18.0);
+                self.group_of.insert(part.id, g);
+                let third = c.node(&format!("{name}:third"));
+                let oh = c.node(&format!("{name}:oh"));
+                c.add(&format!("{name}:R1"), ElementKind::Resistor { a: vcc, b: ctrl, r: 5e3 })?;
+                c.add(&format!("{name}:R2"), ElementKind::Resistor { a: ctrl, b: third, r: 5e3 })?;
+                c.add(&format!("{name}:R3"), ElementKind::Resistor { a: third, b: gnd, r: 5e3 })?;
+                c.add(&format!("{name}:IQ"), ElementKind::Resistor { a: vcc, b: gnd, r: 2.2e3 })?;
+                // Ausgangsstufe in Darlington-Technik: High liegt etwa 1,7 V unter VCC
+                c.add(&format!("{name}:VOH"), ElementKind::VSource { p: vcc, n: oh, wave: Waveform::Dc(1.7) })?;
+                let (os, s) = self.observe(ObsKind::Compare { plus: third, minus: trig }, 1, Some(g), fl(0, Logic::X));
+                let (or, r) = self.observe(ObsKind::Compare { plus: thr, minus: ctrl }, 1, Some(g), fl(1, Logic::X));
+                let (on, nr) = self.observe(
+                    ObsKind::Threshold { node: res, gnd, vcc, il: Level::abs(0.7), ih: Level::abs(0.7), schmitt: false },
+                    1,
+                    Some(g),
+                    fl(6, Logic::L1),
+                );
+                let (q1, q2) = (self.net(), self.net());
+                self.comp(CompKind::Latch555, vec![s[0], r[0], nr[0]], vec![q1, q2], 100);
+                self.drive(c, &format!("{name}:OUT"), out, oh, gnd, 10.0, DriveSrc::Net(q1), Some(g), false)?;
+                self.drive(c, &format!("{name}:DIS"), dis, gnd, gnd, 10.0, DriveSrc::Net(q2), Some(g), true)?;
+                src = vec![
+                    PinSrc::Obs(os, 0),
+                    PinSrc::Obs(or, 0),
+                    PinSrc::None,
+                    PinSrc::Net(q1),
+                    PinSrc::None,
+                    PinSrc::None,
+                    PinSrc::Obs(on, 0),
+                    PinSrc::None,
+                ];
+                Some(SimRole::Ic { vcc: 5, gnd: 7 })
+            }
+            PartKind::OpAmp { kind } => {
+                let [p, n, out, vcc, vee] = nodes[..] else { unreachable!() };
+                c.add(name, ElementKind::OpAmp { p, n, out, vcc, vee, model: kind.model() })?;
+                Some(SimRole::OpAmp)
+            }
+            PartKind::Adc4 => {
+                let [inp, d0, d1, d2, d3, vcc, vref, gnd] = nodes[..] else { unreachable!() };
+                let g = self.group(name, vcc, gnd, 2.0, 7.0);
+                self.group_of.insert(part.id, g);
+                let (_, nets) = self.observe(ObsKind::Adc { node: inp, gnd, vref, bits: 4 }, 4, Some(g), floating[0].then_some(Logic::X));
+                src.push(PinSrc::None);
+                for (k, (&d, &net)) in [d0, d1, d2, d3].iter().zip(&nets).enumerate() {
+                    self.drive(c, &format!("{name}:D{k}"), d, vcc, gnd, R_OUT_HC, DriveSrc::Net(net), Some(g), false)?;
+                    src.push(PinSrc::Net(net));
+                }
+                src.extend([PinSrc::None; 3]);
+                c.add(&format!("{name}:IQ"), ElementKind::Resistor { a: vcc, b: gnd, r: 10e6 })?;
+                Some(SimRole::Ic { vcc: 5, gnd: 7 })
+            }
+            PartKind::Dac4 => {
+                let [d0, d1, d2, d3, out, vcc, vref, gnd] = nodes[..] else { unreachable!() };
+                let g = self.group(name, vcc, gnd, 2.0, 7.0);
+                self.group_of.insert(part.id, g);
+                let (il, ih) = crate::model::LogicFamily::Hc.thresholds();
+                let mut nets = Vec::new();
+                for (k, &d) in [d0, d1, d2, d3].iter().enumerate() {
+                    let (oi, n) = self.observe(ObsKind::Threshold { node: d, gnd, vcc, il, ih, schmitt: false }, 1, Some(g), fl(k, Logic::X));
+                    src.push(PinSrc::Obs(oi, 0));
+                    nets.push(n[0]);
+                }
+                // R-2R-Netzwerk: Ausgangswiderstand R, Spannung = U_REF · Code / 16
+                self.drive(c, &format!("{name}:OUT"), out, vref, gnd, 10e3, DriveSrc::Code { nets, full: 16.0 }, Some(g), false)?;
+                src.extend([PinSrc::None; 4]);
+                c.add(&format!("{name}:IQ"), ElementKind::Resistor { a: vcc, b: gnd, r: 10e6 })?;
+                Some(SimRole::Ic { vcc: 5, gnd: 7 })
+            }
+            _ => None,
+        };
+        if !src.is_empty() {
+            self.pin_src.insert(part.id, src);
+        }
+        Ok(role)
+    }
 }
 
 /// Digitalteil: Bausteine für [`elab_sim::digital::DigitalSim`].
@@ -78,26 +319,9 @@ fn build_digital(doc: &Document, nl: &mut Netlist) {
     }
     let n = nl.nets.len();
     let mut is_dig = vec![false; n];
-    let mut analog_part: Vec<Option<&str>> = vec![None; n];
-    let mut digital_part: Vec<Option<&str>> = vec![None; n];
-    for part in &doc.parts {
-        let digital = part.kind.is_digital();
-        let neutral = matches!(part.kind, PartKind::Ground | PartKind::Probe | PartKind::Voltmeter);
+    for part in &digital_parts {
         for &net in &nl.pin_nets[&part.id] {
-            if digital {
-                is_dig[net] = true;
-                digital_part[net].get_or_insert(&part.name);
-            } else if !neutral {
-                analog_part[net].get_or_insert(&part.name);
-            }
-        }
-    }
-    for k in 0..n {
-        if let (Some(a), Some(d), false) = (analog_part[k], digital_part[k], nl.nets[k].is_gnd) {
-            nl.error.get_or_insert(format!(
-                "{d} (digital) und {a} (analog) hängen am selben Netz {}. Die Kopplung von Analog- und Digitaltechnik folgt in Phase 4.",
-                nl.nets[k].name
-            ));
+            is_dig[net] = true;
         }
     }
     let mut comps = Vec::new();
@@ -283,14 +507,54 @@ pub fn build_with(doc: &Document, pressed: &HashSet<u32>) -> Netlist {
         roles: HashMap::new(),
         voltmeters: doc.parts.iter().filter(|p| matches!(p.kind, PartKind::Voltmeter)).map(|p| p.id).collect(),
         digital: None,
+        mixed: None,
         error: None,
     };
 
-    // 6. Digitalteil
-    build_digital(doc, &mut nl);
+    // 6. Rein digital oder gemischt?
+    let neutral = |k: &PartKind| matches!(k, PartKind::Ground | PartKind::Probe | PartKind::Voltmeter);
+    let has_digital = doc.parts.iter().any(|p| p.kind.is_digital());
+    let has_ic = doc.parts.iter().any(|p| p.kind.is_ic());
+    let has_plain_analog = doc.parts.iter().any(|p| !p.kind.is_digital() && !p.kind.is_ic() && !neutral(&p.kind));
+    let mixed = has_ic || (has_digital && has_plain_analog);
+    if !mixed {
+        build_digital(doc, &mut nl);
+    }
 
     // 7. Analogteil
     let electrical: Vec<_> = doc.parts.iter().filter(|p| is_analog(&p.kind)).collect();
+    // Netze, deren Spannung etwas festlegt (sonst hängen IC-Eingänge in der Luft)
+    let mut drivable = vec![false; nl.nets.len()];
+    let mut analog_net = vec![false; nl.nets.len()];
+    for part in &doc.parts {
+        let pn = &nl.pin_nets[&part.id];
+        if part.kind.is_ic() {
+            for (k, role) in part.kind.ic_pins().iter().enumerate() {
+                analog_net[pn[k]] = true;
+                if !matches!(role, IcPin::In | IcPin::AnalogIn) {
+                    drivable[pn[k]] = true;
+                }
+            }
+        } else if part.kind.is_digital() {
+            for (k, role) in part.kind.pin_roles().iter().enumerate() {
+                if *role == PinRole::Out {
+                    drivable[pn[k]] = true;
+                }
+            }
+        } else if !neutral(&part.kind) {
+            for &n in pn {
+                analog_net[n] = true;
+                drivable[n] = true;
+            }
+        }
+    }
+    for (k, net) in nl.nets.iter().enumerate() {
+        if net.is_gnd {
+            analog_net[k] = true;
+            drivable[k] = true;
+        }
+    }
+    let mut mix = MixBuilder::new(nl.nets.len());
     if !has_gnd {
         if !electrical.is_empty() {
             nl.error
@@ -315,6 +579,24 @@ pub fn build_with(doc: &Document, pressed: &HashSet<u32>) -> Netlist {
         let (a, b) = (nodes[0], nodes[1]);
         // Mehrteilige Bauteile
         match &part.kind {
+            _ if part.kind.is_ic() => {
+                let floating: Vec<bool> = pn.iter().map(|&n| !drivable[n]).collect();
+                match mix.ic(&mut nl.circuit, part, &nodes, &floating) {
+                    Ok(role) => {
+                        nl.simulated.insert(part.id, part.name.clone());
+                        if let Some(role) = role {
+                            nl.roles.insert(part.id, role);
+                        }
+                    }
+                    Err(SimError::DuplicateName(_)) => {
+                        nl.error.get_or_insert(format!("Der Name „{}“ ist doppelt vergeben. Benenne eines der Bauteile um.", part.name));
+                    }
+                    Err(e) => {
+                        nl.error.get_or_insert(e.to_string());
+                    }
+                }
+                continue;
+            }
             PartKind::Potentiometer { r, pos } => {
                 let pos = pos.clamp(0.0, 1.0);
                 // Stellung = Anteil zwischen Schleifer und B
@@ -392,7 +674,85 @@ pub fn build_with(doc: &Document, pressed: &HashSet<u32>) -> Netlist {
             }
         }
     }
+    if mixed {
+        if let Err(e) = bridge_digital(doc, &mut nl, &mut mix, &analog_net, &drivable) {
+            nl.error.get_or_insert(e.to_string());
+        }
+        let mut digital_net = vec![false; nl.nets.len()];
+        for part in doc.parts.iter().filter(|p| p.kind.is_digital()) {
+            for &n in &nl.pin_nets[&part.id] {
+                digital_net[n] = !analog_net[n];
+            }
+        }
+        nl.mixed = Some(MixedNetlist { spec: mix.spec, digital_net, comp_of: mix.comp_of, pin_src: mix.pin_src, group_of: mix.group_of });
+    }
     nl
+}
+
+/// Gemischte Schaltung: Ideale Logikbausteine laufen im Digitalteil mit. Hängt ein
+/// Anschluss an einem Analognetz, wird er gekoppelt: Ausgänge treiben mit 5 V
+/// über einen kleinen Innenwiderstand, Eingänge schalten bei 2,5 V.
+fn bridge_digital(doc: &Document, nl: &mut Netlist, mix: &mut MixBuilder, analog_net: &[bool], drivable: &[bool]) -> Result<(), SimError> {
+    for part in doc.parts.iter().filter(|p| p.kind.is_digital()) {
+        let pn = nl.pin_nets[&part.id].clone();
+        let roles = part.kind.pin_roles();
+        let mut ins = Vec::new();
+        let mut outs = Vec::new();
+        let mut src = Vec::new();
+        let mut bridged = false;
+        for (k, (&n, role)) in pn.iter().zip(&roles).enumerate() {
+            if !analog_net[n] {
+                src.push(PinSrc::Net(n));
+                match role {
+                    PinRole::In => ins.push(n),
+                    PinRole::Out => outs.push(n),
+                    PinRole::Passive => {}
+                }
+                continue;
+            }
+            bridged = true;
+            let node = nl.circuit.node(&nl.nets[n].name);
+            match role {
+                PinRole::In => {
+                    let vdd = mix.vdd(&mut nl.circuit)?;
+                    let floating = (!drivable[n]).then_some(Logic::X);
+                    let (oi, nets) = mix.observe(
+                        ObsKind::Threshold { node, gnd: 0, vcc: vdd, il: Level::frac(0.5), ih: Level::frac(0.5), schmitt: false },
+                        1,
+                        None,
+                        floating,
+                    );
+                    ins.push(nets[0]);
+                    src.push(PinSrc::Obs(oi, 0));
+                }
+                PinRole::Out => {
+                    let vdd = mix.vdd(&mut nl.circuit)?;
+                    let d = mix.net();
+                    mix.drive(&mut nl.circuit, &format!("{}~{k}", part.name), node, vdd, 0, R_OUT_IDEAL, DriveSrc::Net(d), None, false)?;
+                    outs.push(d);
+                    src.push(PinSrc::Net(d));
+                }
+                PinRole::Passive => src.push(PinSrc::None),
+            }
+        }
+        if bridged {
+            mix.pin_src.insert(part.id, src);
+        }
+        let (kind, delay) = match &part.kind {
+            PartKind::Gate { gate } => (CompKind::Gate(gate.to_sim()), 10),
+            PartKind::LogicInput { on } => (CompKind::Input(Logic::from_bool(*on)), 0),
+            PartKind::Button => (CompKind::Input(Logic::L0), 0),
+            PartKind::Clock { freq } => (CompKind::Clock { half_period: (0.5e9 / freq.max(1e-6)).round().max(1.0) as u64 }, 0),
+            PartKind::LogicHigh => (CompKind::Const(Logic::L1), 0),
+            PartKind::DFlipFlop => (CompKind::DFlipFlop, 15),
+            PartKind::JkFlipFlop => (CompKind::JkFlipFlop, 15),
+            PartKind::Counter4 => (CompKind::Counter4, 20),
+            _ => continue,
+        };
+        let c = mix.comp(kind, ins, outs, delay);
+        mix.comp_of.insert(part.id, c);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

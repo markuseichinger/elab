@@ -202,6 +202,130 @@ impl GateType {
     }
 }
 
+/// Logikfamilie echter Bausteine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LogicFamily {
+    /// CMOS, Schaltschwellen 30 % / 70 % der Versorgung, 2 … 6 V
+    Hc,
+    /// CMOS mit TTL-Schwellen 0,8 V / 2,0 V, nur 5 V
+    Hct,
+}
+
+impl LogicFamily {
+    pub const ALL: [LogicFamily; 2] = [LogicFamily::Hc, LogicFamily::Hct];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LogicFamily::Hc => "74HC",
+            LogicFamily::Hct => "74HCT",
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            LogicFamily::Hc => "CMOS, 2 … 6 V. Eingang: 0 unter 30 %, 1 über 70 % der Versorgung.",
+            LogicFamily::Hct => "CMOS mit TTL-Pegeln, 4,5 … 5,5 V. Eingang: 0 unter 0,8 V, 1 über 2,0 V.",
+        }
+    }
+
+    /// Schaltschwellen (Low, High) eines normalen Eingangs.
+    pub fn thresholds(self) -> (elab_sim::Level, elab_sim::Level) {
+        use elab_sim::Level;
+        match self {
+            LogicFamily::Hc => (Level::frac(0.3), Level::frac(0.7)),
+            LogicFamily::Hct => (Level::abs(0.8), Level::abs(2.0)),
+        }
+    }
+
+    /// Schwellen des Schmitt-Trigger-Eingangs (74HC14): (U_T−, U_T+).
+    pub fn schmitt(self) -> (elab_sim::Level, elab_sim::Level) {
+        use elab_sim::Level;
+        match self {
+            LogicFamily::Hc => (Level::frac(0.36), Level::frac(0.56)),
+            LogicFamily::Hct => (Level::abs(0.9), Level::abs(1.6)),
+        }
+    }
+
+    /// Kleinste Versorgungsspannung, bei der der Baustein arbeitet.
+    pub fn v_min(self) -> f64 {
+        match self {
+            LogicFamily::Hc => 2.0,
+            LogicFamily::Hct => 4.5,
+        }
+    }
+}
+
+/// Operationsverstärker-Typen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum OpAmpType {
+    Lm358,
+    Mcp6001,
+}
+
+impl OpAmpType {
+    pub const ALL: [OpAmpType; 2] = [OpAmpType::Lm358, OpAmpType::Mcp6001];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            OpAmpType::Lm358 => "LM358",
+            OpAmpType::Mcp6001 => "MCP6001",
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            OpAmpType::Lm358 => "Standard-OpAmp, 3 … 32 V. Ausgang kommt bis etwa 1,5 V an V+ heran.",
+            OpAmpType::Mcp6001 => "Rail-to-Rail-OpAmp, 1,8 … 6 V. Ausgang reicht bis an beide Versorgungen.",
+        }
+    }
+
+    pub fn model(self) -> elab_sim::OpAmpModel {
+        match self {
+            OpAmpType::Lm358 => elab_sim::OpAmpModel::LM358,
+            OpAmpType::Mcp6001 => elab_sim::OpAmpModel::RAIL_TO_RAIL,
+        }
+    }
+}
+
+/// Anschlüsse eines rechteckigen IC-Symbols: links, rechts, oben, unten.
+pub struct IcSides {
+    pub left: &'static [&'static str],
+    pub right: &'static [&'static str],
+    pub top: &'static [&'static str],
+    pub bottom: &'static [&'static str],
+}
+
+impl IcSides {
+    /// Halbe Höhe des Kastens: Platz für die Anschlüsse an den Seiten plus eine Zeile für die Beschriftung oben und unten
+    fn rows(&self) -> i32 {
+        self.left.len().max(self.right.len()).max(2) as i32 + 1
+    }
+    /// Halbe Breite des Kastens
+    fn half_w(&self) -> i32 {
+        let long = self.left.iter().chain(self.right).any(|n| n.trim_start_matches('/').len() >= 4);
+        (self.top.len().max(self.bottom.len()) as i32).max(if long { 3 } else { 2 })
+    }
+    /// Pins in lokalen Koordinaten: links, rechts, oben, unten.
+    pub fn pins(&self) -> Vec<P> {
+        let (h, w) = (self.rows(), self.half_w());
+        let col = |n: usize, k: usize| -(n as i32 - 1) + 2 * k as i32;
+        let mut v = Vec::new();
+        v.extend((0..self.left.len()).map(|k| P::new(-w - 1, col(self.left.len(), k))));
+        v.extend((0..self.right.len()).map(|k| P::new(w + 1, col(self.right.len(), k))));
+        v.extend((0..self.top.len()).map(|k| P::new(col(self.top.len(), k), -h - 1)));
+        v.extend((0..self.bottom.len()).map(|k| P::new(col(self.bottom.len(), k), h + 1)));
+        v
+    }
+    /// Kasten (x0, y0, x1, y1) ohne Anschlussleitungen.
+    pub fn body(&self) -> (f32, f32, f32, f32) {
+        let (h, w) = (self.rows() as f32, self.half_w() as f32);
+        (-w, -h, w, h)
+    }
+    pub fn names(&self) -> Vec<&'static str> {
+        self.left.iter().chain(self.right).chain(self.top).chain(self.bottom).copied().collect()
+    }
+}
+
 /// Transistortypen mit Modellparametern.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TransistorType {
@@ -375,6 +499,49 @@ pub enum PartKind {
     JkFlipFlop,
     Counter4,
     SevenSeg,
+    // --- Phase 4: echte Bausteine mit Versorgung ---
+    /// Logikgatter-IC (74HC00 …) mit VCC und GND
+    GateIc {
+        gate: GateType,
+        family: LogicFamily,
+    },
+    /// Schmitt-Trigger-Inverter (74HC14)
+    SchmittIc {
+        family: LogicFamily,
+    },
+    /// D-Flipflop (74HC74, ohne Setz-/Rücksetzeingänge)
+    DffIc {
+        family: LogicFamily,
+    },
+    /// 4-Bit-Zähler (74HC161, vereinfacht: Takt und /MR)
+    CounterIc {
+        family: LogicFamily,
+    },
+    /// Timer NE555
+    Timer555,
+    /// Operationsverstärker
+    OpAmp {
+        kind: OpAmpType,
+    },
+    /// 4-Bit-Analog-Digital-Umsetzer
+    Adc4,
+    /// 4-Bit-Digital-Analog-Umsetzer (R-2R-Netzwerk, ohne Puffer)
+    Dac4,
+}
+
+/// Rolle eines IC-Anschlusses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IcPin {
+    /// Logikeingang (hochohmig)
+    In,
+    /// Ausgang
+    Out,
+    /// Versorgung
+    Supply,
+    /// Analoger Eingang (hochohmig, z. B. OpAmp, Komparator)
+    AnalogIn,
+    /// Sonstiger Anschluss (z. B. CTRL am 555)
+    Analog,
 }
 
 /// Grobe Einordnung für Palette und Darstellung.
@@ -390,6 +557,8 @@ pub enum Shape {
     Logic,
     /// Dreipol (Transistor, Potentiometer)
     ThreePole,
+    /// Integrierter Baustein mit Versorgungsanschlüssen (Mixed-Signal)
+    Ic,
 }
 
 const fn p(x: i32, y: i32) -> P {
@@ -401,7 +570,117 @@ impl PartKind {
     pub fn palette() -> Vec<(&'static str, Vec<PartKind>)> {
         let mut v = Self::palette_analog();
         v.extend(Self::palette_digital());
+        v.extend(Self::palette_ic());
         v
+    }
+
+    pub fn palette_ic() -> Vec<(&'static str, Vec<PartKind>)> {
+        let f = LogicFamily::Hc;
+        vec![
+            (
+                "Logik-ICs (74HC)",
+                [GateType::Nand, GateType::Nor, GateType::And, GateType::Or, GateType::Xor, GateType::Not]
+                    .iter()
+                    .map(|&g| PartKind::GateIc { gate: g, family: f })
+                    .chain([PartKind::SchmittIc { family: f }])
+                    .collect(),
+            ),
+            ("Speicher & Zähler", vec![PartKind::DffIc { family: f }, PartKind::CounterIc { family: f }]),
+            ("Analog & Wandler", vec![PartKind::OpAmp { kind: OpAmpType::Lm358 }, PartKind::Timer555, PartKind::Adc4, PartKind::Dac4]),
+            (
+                "Versorgung & Anzeige",
+                vec![
+                    PartKind::DcVoltage { v: 5.0 },
+                    PartKind::Ground,
+                    PartKind::Resistor { r: 1000.0 },
+                    PartKind::Capacitor { c: 1e-6 },
+                    PartKind::Led { color: LedColor::Rot },
+                    PartKind::PushButton,
+                ],
+            ),
+        ]
+    }
+
+    /// Ist das ein echter Baustein mit Versorgung?
+    pub fn is_ic(&self) -> bool {
+        self.shape() == Shape::Ic
+    }
+
+    /// Typbezeichnung eines ICs, z. B. „74HC00“.
+    pub fn ic_type(&self) -> Option<String> {
+        use PartKind::*;
+        Some(match self {
+            GateIc { gate, family } => {
+                let n = match gate {
+                    GateType::Nand => "00",
+                    GateType::Nor => "02",
+                    GateType::Not => "04",
+                    GateType::And => "08",
+                    GateType::Or => "32",
+                    GateType::Xor => "86",
+                    GateType::Xnor => "7266",
+                };
+                format!("{}{n}", family.label())
+            }
+            SchmittIc { family } => format!("{}14", family.label()),
+            DffIc { family } => format!("{}74", family.label()),
+            CounterIc { family } => format!("{}161", family.label()),
+            Timer555 => "NE555".into(),
+            OpAmp { kind } => kind.label().into(),
+            Adc4 => "ADC 4 Bit".into(),
+            Dac4 => "DAC 4 Bit".into(),
+            _ => return None,
+        })
+    }
+
+    /// Logikfamilie (falls umschaltbar).
+    pub fn family(&self) -> Option<LogicFamily> {
+        use PartKind::*;
+        match self {
+            GateIc { family, .. } | SchmittIc { family } | DffIc { family } | CounterIc { family } => Some(*family),
+            _ => None,
+        }
+    }
+
+    pub fn set_family(&mut self, f: LogicFamily) {
+        use PartKind::*;
+        if let GateIc { family, .. } | SchmittIc { family } | DffIc { family } | CounterIc { family } = self {
+            *family = f;
+        }
+    }
+
+    /// Anschlüsse rechteckiger IC-Symbole.
+    pub fn ic_sides(&self) -> Option<IcSides> {
+        use PartKind::*;
+        Some(match self {
+            DffIc { .. } => IcSides { left: &["D", "C"], right: &["Q", "/Q"], top: &["VCC"], bottom: &["GND"] },
+            CounterIc { .. } => IcSides { left: &["C", "/MR"], right: &["Q0", "Q1", "Q2", "Q3"], top: &["VCC"], bottom: &["GND"] },
+            Timer555 => IcSides { left: &["TRIG", "THR", "CTRL"], right: &["OUT", "DIS"], top: &["VCC", "/RES"], bottom: &["GND"] },
+            Adc4 => IcSides { left: &["IN"], right: &["D0", "D1", "D2", "D3"], top: &["VCC", "REF"], bottom: &["GND"] },
+            Dac4 => IcSides { left: &["D0", "D1", "D2", "D3"], right: &["OUT"], top: &["VCC", "REF"], bottom: &["GND"] },
+            _ => return None,
+        })
+    }
+
+    /// Rolle jedes IC-Anschlusses (Reihenfolge wie [`Self::local_pins`]).
+    pub fn ic_pins(&self) -> Vec<IcPin> {
+        use IcPin::*;
+        use PartKind::*;
+        match self {
+            GateIc { gate, .. } => {
+                let mut v = vec![In; gate.inputs()];
+                v.extend([Out, Supply, Supply]);
+                v
+            }
+            SchmittIc { .. } => vec![In, Out, Supply, Supply],
+            OpAmp { .. } => vec![AnalogIn, AnalogIn, Out, Supply, Supply],
+            DffIc { .. } => vec![In, In, Out, Out, Supply, Supply],
+            CounterIc { .. } => vec![In, In, Out, Out, Out, Out, Supply, Supply],
+            Timer555 => vec![AnalogIn, AnalogIn, Analog, Out, Out, Supply, In, Supply],
+            Adc4 => vec![AnalogIn, Out, Out, Out, Out, Supply, AnalogIn, Supply],
+            Dac4 => vec![In, In, In, In, Out, Supply, Analog, Supply],
+            _ => Vec::new(),
+        }
     }
 
     pub fn palette_analog() -> Vec<(&'static str, Vec<PartKind>)> {
@@ -462,6 +741,7 @@ impl PartKind {
             Gate { .. } | LogicInput { .. } | Button | Clock { .. } | LogicHigh | LogicLed { .. } | DFlipFlop | JkFlipFlop | Counter4 | SevenSeg => {
                 Shape::Logic
             }
+            GateIc { .. } | SchmittIc { .. } | DffIc { .. } | CounterIc { .. } | Timer555 | OpAmp { .. } | Adc4 | Dac4 => Shape::Ic,
             _ => Shape::TwoPole,
         }
     }
@@ -498,6 +778,7 @@ impl PartKind {
             DFlipFlop | JkFlipFlop => "FF",
             Counter4 => "CTR",
             SevenSeg => "ANZ",
+            GateIc { .. } | SchmittIc { .. } | DffIc { .. } | CounterIc { .. } | Timer555 | OpAmp { .. } | Adc4 | Dac4 => "U",
         }
     }
 
@@ -546,11 +827,34 @@ impl PartKind {
             JkFlipFlop => "JK-Flipflop",
             Counter4 => "4-Bit-Zähler",
             SevenSeg => "7-Segment-Anzeige",
+            GateIc { gate, .. } => match gate {
+                GateType::And => "UND-Baustein",
+                GateType::Or => "ODER-Baustein",
+                GateType::Not => "NICHT-Baustein",
+                GateType::Nand => "NAND-Baustein",
+                GateType::Nor => "NOR-Baustein",
+                GateType::Xor => "XOR-Baustein",
+                GateType::Xnor => "XNOR-Baustein",
+            },
+            SchmittIc { .. } => "Schmitt-Trigger",
+            DffIc { .. } => "D-Flipflop-IC",
+            CounterIc { .. } => "Zähler-IC",
+            Timer555 => "Timer 555",
+            OpAmp { .. } => "Operationsverstärker",
+            Adc4 => "A/D-Umsetzer",
+            Dac4 => "D/A-Umsetzer",
         }
     }
 
     /// Pins in lokalen Rasterkoordinaten (vor der Drehung).
-    pub fn local_pins(&self) -> &'static [P] {
+    pub fn local_pins(&self) -> Vec<P> {
+        if let Some(sides) = self.ic_sides() {
+            return sides.pins();
+        }
+        self.static_pins().to_vec()
+    }
+
+    fn static_pins(&self) -> &'static [P] {
         const TWO: [P; 2] = [p(-2, 0), p(2, 0)];
         const SRC: [P; 2] = [p(0, -2), p(0, 2)];
         const ONE: [P; 1] = [p(0, 0)];
@@ -566,8 +870,16 @@ impl PartKind {
         const T_TOP_C: [P; 3] = [p(-2, 0), p(1, -2), p(1, 2)]; // NPN: B, C oben, E unten · NMOS: G, D oben, S unten
         const T_TOP_E: [P; 3] = [p(-2, 0), p(1, 2), p(1, -2)]; // PNP: B, C unten, E oben · PMOS: G, D unten, S oben
         const POT: [P; 3] = [p(-2, 0), p(0, -2), p(2, 0)];
+        // ICs: Versorgung oben (VCC) und unten (GND)
+        const GATE2_IC: [P; 5] = [p(-3, -1), p(-3, 1), p(3, 0), p(0, -3), p(0, 3)];
+        const GATE1_IC: [P; 4] = [p(-3, 0), p(3, 0), p(0, -3), p(0, 3)];
+        const OPAMP: [P; 5] = [p(-3, 1), p(-3, -1), p(3, 0), p(0, -3), p(0, 3)]; // +, −, Ausgang, V+, V−
         use PartKind::*;
         match self {
+            GateIc { gate, .. } if gate.inputs() == 1 => &GATE1_IC,
+            GateIc { .. } => &GATE2_IC,
+            SchmittIc { .. } => &GATE1_IC,
+            OpAmp { .. } => &OPAMP,
             Transistor { kind } => match kind.family() {
                 TransistorFamily::Npn | TransistorFamily::Nmos => &T_TOP_C,
                 TransistorFamily::Pnp | TransistorFamily::Pmos => &T_TOP_E,
@@ -602,14 +914,26 @@ impl PartKind {
             DFlipFlop => vec![In, In, Out, Out],
             JkFlipFlop => vec![In, In, In, Out, Out],
             Counter4 => vec![In, In, Out, Out, Out, Out],
+            // ICs sind aus Sicht der Netzliste Analogbauteile mit eigener Logik
             _ => vec![Passive; n],
         }
     }
 
     /// Bezeichnung der Anschlüsse für Erklärungen.
-    pub fn pin_names(&self) -> &'static [&'static str] {
+    pub fn pin_names(&self) -> Vec<&'static str> {
+        if let Some(sides) = self.ic_sides() {
+            return sides.names();
+        }
+        self.static_pin_names().to_vec()
+    }
+
+    fn static_pin_names(&self) -> &'static [&'static str] {
         use PartKind::*;
         match self {
+            GateIc { gate, .. } if gate.inputs() == 1 => &["A", "Y", "VCC", "GND"],
+            GateIc { .. } => &["A", "B", "Y", "VCC", "GND"],
+            SchmittIc { .. } => &["A", "Y", "VCC", "GND"],
+            OpAmp { .. } => &["+ (nichtinvertierend)", "− (invertierend)", "Ausgang", "V+", "V−"],
             Diode { .. } | Led { .. } => &["Anode", "Kathode"],
             DcVoltage { .. } | AcVoltage { .. } | SquareVoltage { .. } | CurrentSource { .. } => &["+", "−"],
             Ground | Probe | LogicHigh => &["Anschluss"],
@@ -654,6 +978,7 @@ impl PartKind {
             Clock { freq } => si(*freq, "Hz"),
             Transistor { kind } => kind.label().into(),
             Potentiometer { r, pos } => format!("{} · {:.0} %", si(*r, "Ω"), pos * 100.0),
+            _ if self.is_ic() => self.ic_type().unwrap_or_default(),
             _ => String::new(),
         }
     }
@@ -675,6 +1000,12 @@ impl PartKind {
             DFlipFlop | JkFlipFlop => (-3.0, -3.2, 3.0, 3.2),
             Counter4 => (-3.0, -4.4, 3.0, 4.4),
             SevenSeg => (-3.0, -4.4, 2.8, 4.4),
+            GateIc { .. } | SchmittIc { .. } | OpAmp { .. } => (-3.0, -3.0, 3.0, 3.0),
+            _ if self.ic_sides().is_some() => {
+                let sides = self.ic_sides().unwrap();
+                let (x0, y0, x1, y1) = sides.body();
+                (x0 - 1.0, y0 - 1.0, x1 + 1.0, y1 + 1.0)
+            }
             _ => match self.shape() {
                 Shape::Source => (-1.0, -2.0, 1.0, 2.0),
                 _ => (-2.0, -0.9, 2.0, 0.9),
@@ -712,6 +1043,11 @@ impl Part {
     /// Pins in Rasterkoordinaten.
     pub fn pins(&self) -> Vec<P> {
         self.kind.local_pins().iter().map(|&p| self.pos + rot_i(p, self.rot)).collect()
+    }
+
+    /// Anzahl der Anschlüsse.
+    pub fn local_pins_len(&self) -> usize {
+        self.kind.local_pins().len()
     }
 
     /// Hüllbox in Rasterkoordinaten.

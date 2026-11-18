@@ -12,6 +12,7 @@ use crate::circuit::{Circuit, ElementKind, NodeId, SimError};
 use crate::diode::{pnjlim, VT_300K};
 use crate::linalg::Matrix;
 use crate::transistor::fetlim;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// Leitwert parallel zu jedem pn-Übergang (wie GMIN in SPICE).
@@ -88,6 +89,40 @@ enum Mode {
     },
 }
 
+/// Rückmeldung eines Prüfers zu einem vorläufig berechneten Zeitschritt.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StepCheck {
+    Accept,
+    /// Schritt verwerfen und nur bis zu diesem Zeitpunkt rechnen
+    Retry(f64),
+}
+
+/// Prüfer für vorläufige Zeitschritte: (t, x, t_neu, x_neu) → annehmen oder verkürzen.
+pub type StepChecker<'a> = dyn FnMut(f64, &[f64], f64, &[f64]) -> StepCheck + 'a;
+
+/// Zustand einer laufenden, schrittweisen Transientenanalyse.
+#[derive(Clone, Debug)]
+pub struct TranState {
+    /// Aktuelle Zeit in s
+    pub t: f64,
+    x: Vec<f64>,
+    react: Vec<Reactive>,
+    hist: Vec<(f64, Vec<f64>)>,
+    after_bp: bool,
+    /// Vorgeschlagener nächster Zeitschritt
+    pub h: f64,
+}
+
+impl TranState {
+    /// Lösungsvektor (Knotenspannungen ohne Masse, dann Zweigströme).
+    pub fn x(&self) -> &[f64] {
+        &self.x
+    }
+}
+
+/// Kennung im Feld `i`: `v` ist die nachlaufende Ausgangsspannung eines OpAmps.
+const OPAMP_STATE: f64 = 1.0;
+
 /// Gespeicherter Zustand eines Energiespeichers aus dem letzten Zeitschritt.
 #[derive(Clone, Copy, Debug, Default)]
 struct Reactive {
@@ -161,6 +196,12 @@ fn volt(x: &[f64], node: NodeId) -> f64 {
     row(node).map_or(0.0, |r| x[r])
 }
 
+/// Knotenspannung aus einem Lösungsvektor (für Mixed-Signal-Kopplung).
+#[inline]
+pub fn node_voltage(x: &[f64], node: NodeId) -> f64 {
+    volt(x, node)
+}
+
 struct System {
     m: Matrix,
     rhs: Vec<f64>,
@@ -227,8 +268,10 @@ impl System {
 
 /// Simulator für eine feste Schaltungstopologie.
 pub struct Simulator<'c> {
-    circuit: &'c Circuit,
+    circuit: Cow<'c, Circuit>,
     layout: Layout,
+    /// Zustand der Logikausgänge ([`ElementKind::Driver`]) je Element: Anteil High oder hochohmig
+    drive: Vec<Option<f64>>,
     pub options: SimOptions,
     pub stats: Stats,
 }
@@ -243,10 +286,54 @@ pub struct Stats {
     pub source_stepping: bool,
 }
 
+impl Simulator<'static> {
+    /// Simulator, der seine Schaltung selbst besitzt (z. B. für eine Echtzeitsimulation).
+    pub fn owned(circuit: Circuit) -> Result<Self, SimError> {
+        Self::with(Cow::Owned(circuit))
+    }
+}
+
 impl<'c> Simulator<'c> {
     pub fn new(circuit: &'c Circuit) -> Result<Self, SimError> {
+        Self::with(Cow::Borrowed(circuit))
+    }
+
+    fn with(circuit: Cow<'c, Circuit>) -> Result<Self, SimError> {
         circuit.check_connectivity()?;
-        Ok(Self { circuit, layout: Layout::new(circuit), options: SimOptions::default(), stats: Stats::default() })
+        let layout = Layout::new(&circuit);
+        let drive = vec![None; circuit.elements().len()];
+        Ok(Self { circuit, layout, drive, options: SimOptions::default(), stats: Stats::default() })
+    }
+
+    pub fn circuit(&self) -> &Circuit {
+        &self.circuit
+    }
+
+    /// Ersetzt die Werte eines Bauteils bei gleicher Verschaltung (Schalter umgelegt,
+    /// Poti verstellt), ohne den Simulator neu aufzubauen.
+    pub fn update_element(&mut self, name: &str, kind: ElementKind) -> Result<(), SimError> {
+        let idx = self.circuit.find_element(name).ok_or_else(|| SimError::UnknownName(name.into()))?;
+        let old = &self.circuit.elements()[idx].kind;
+        if old.terminals() != kind.terminals() || std::mem::discriminant(old) != std::mem::discriminant(&kind) {
+            return Err(SimError::InvalidValue { element: name.into(), msg: "Verschaltung geändert".into() });
+        }
+        self.circuit.to_mut().update(name, kind)
+    }
+
+    /// Zustand eines Logikausgangs.
+    pub fn drive(&self, elem: usize) -> Option<f64> {
+        self.drive[elem]
+    }
+
+    /// Setzt den Zustand eines Logikausgangs: `Some(f)` mit f ∈ [0, 1] (1 = High),
+    /// `None` = hochohmig. Gibt zurück, ob sich etwas geändert hat.
+    pub fn set_drive(&mut self, elem: usize, f: Option<f64>) -> bool {
+        let f = f.map(|v| v.clamp(0.0, 1.0));
+        if self.drive[elem] == f {
+            return false;
+        }
+        self.drive[elem] = f;
+        true
     }
 
     /// Anzahl der Unbekannten im Gleichungssystem.
@@ -376,6 +463,44 @@ impl<'c> Simulator<'c> {
                     sys.inject(*s, -cd);
                     sys.conductance(*d, *s, GMIN_JUNCTION);
                 }
+                ElementKind::Driver { out, hi, lo, r } => {
+                    if let Some(f) = self.drive[ei] {
+                        if f > 0.0 {
+                            sys.conductance(*out, *hi, f / r);
+                        }
+                        if f < 1.0 {
+                            sys.conductance(*out, *lo, (1.0 - f) / r);
+                        }
+                    }
+                }
+                ElementKind::OpAmp { p, n, out, vcc, vee, model } => {
+                    let (vp, vn, vo, vc, ve) = (volt(x, *p), volt(x, *n), volt(x, *out), volt(x, *vcc), volt(x, *vee));
+                    let mut op = model.eval(vp - vn, vc, ve);
+                    // Im Zeitverlauf folgt der Ausgang seinem Ziel mit der Zeitkonstante tau
+                    // (immer Euler-rückwärts: stabil auch bei sehr hoher Schleifenverstärkung)
+                    if let Mode::Tran { h, .. } = ctx.mode {
+                        let a = h / model.tau;
+                        let k = a / (1.0 + a);
+                        op.v_target = (ctx.react[ei].v + a * op.v_target) / (1.0 + a);
+                        op.d_diff *= k;
+                        op.d_vcc *= k;
+                        op.d_vee *= k;
+                    }
+                    let g = 1.0 / model.r_out;
+                    // Ausgangsstrom i = (U_ziel − U_out)/R, linearisiert um den aktuellen Punkt
+                    let i0 = (op.v_target - vo) * g;
+                    let d = [(*p, op.d_diff * g), (*n, -op.d_diff * g), (*vcc, op.d_vcc * g), (*vee, op.d_vee * g), (*out, -g)];
+                    let lin: f64 = d.iter().map(|(k, dk)| dk * volt(x, *k)).sum();
+                    // Anschlussströme in das Bauteil: Ausgang −i, Versorgung liefert i
+                    let src = if i0 >= 0.0 { *vcc } else { *vee };
+                    for (node, c) in [(*out, -1.0), (src, 1.0)] {
+                        for (k, dk) in d {
+                            sys.add(row(node), row(k), c * dk);
+                        }
+                        sys.inject(node, c * (i0 - lin));
+                    }
+                    sys.conductance(*p, *n, GMIN_JUNCTION);
+                }
             }
         }
         limited
@@ -404,6 +529,21 @@ impl<'c> Simulator<'c> {
         dv
     }
 
+    /// Steile Verhaltensmodelle (OpAmp): Schon winzige Spannungsänderungen am Eingang
+    /// ändern den Ausgangsstrom stark. Konvergiert ist erst, wenn sich auch die
+    /// Ausgangszielspannung nicht mehr ändert.
+    fn targets_converged(&self, x: &[f64], sol: &[f64]) -> bool {
+        let o = &self.options;
+        self.circuit.elements().iter().all(|e| match &e.kind {
+            ElementKind::OpAmp { p, n, vcc, vee, model, .. } => {
+                let t = |v: &[f64]| model.eval(volt(v, *p) - volt(v, *n), volt(v, *vcc), volt(v, *vee)).v_target;
+                let (a, b) = (t(x), t(sol));
+                (a - b).abs() <= o.reltol * a.abs().max(b.abs()) + 10.0 * o.vntol
+            }
+            _ => true,
+        })
+    }
+
     /// Newton-Raphson ab Startwert `x`; bei Erfolg steht die Lösung in `x`.
     fn newton(&mut self, x: &mut Vec<f64>, ctx: &Ctx, max_iter: usize) -> Result<usize, NewtonFail> {
         let n = self.layout.size;
@@ -420,7 +560,7 @@ impl<'c> Simulator<'c> {
                 *x = sol;
                 return Ok(it);
             }
-            let mut conv = !limited;
+            let mut conv = !limited && self.targets_converged(x, &sol);
             if conv {
                 for i in 0..n {
                     let tol = o.reltol * sol[i].abs().max(x[i].abs()) + if i < nv { o.vntol } else { o.abstol };
@@ -531,7 +671,7 @@ impl<'c> Simulator<'c> {
         let react = vec![Reactive::default(); self.circuit.elements().len()];
         let currents = self.element_currents(&x, &react, 0.0);
         let term = self.terminal_currents(&x, &currents);
-        Ok(OpResult { probe: Probe::new(self.circuit), x, currents, term })
+        Ok(OpResult { probe: Probe::new(&self.circuit), x, currents, term })
     }
 
     // ---------------------------------------------------------------------
@@ -553,86 +693,120 @@ impl<'c> Simulator<'c> {
         bp
     }
 
-    /// Simuliert den zeitlichen Verlauf von 0 bis `opts.t_stop`.
-    ///
-    /// Trapezregel mit Schrittweitensteuerung über den lokalen Abbruchfehler;
-    /// direkt nach Knickstellen der Quellen ein Schritt Euler-rückwärts, um
-    /// das typische Klingeln der Trapezregel zu vermeiden.
-    pub fn transient(&mut self, opts: &TranOptions) -> Result<TranResult, SimError> {
-        let n_el = self.circuit.elements().len();
-        let nv = self.layout.n_nodes - 1;
-        let mut react = vec![Reactive::default(); n_el];
-
-        // Anfangszustand
-        let x0 = if opts.use_ic {
+    /// Anfangslösung für die Transientenanalyse: Arbeitspunkt oder – mit `use_ic` –
+    /// Kondensatoren auf ihrer Anfangsspannung (sonst 0 V), Spulen stromlos.
+    pub fn initial_solution(&mut self, use_ic: bool) -> Result<Vec<f64>, SimError> {
+        if use_ic {
+            let react = vec![Reactive::default(); self.circuit.elements().len()];
             let ctx = Ctx { t: 0.0, mode: Mode::InitIc, src_scale: 1.0, g_extra: 0.0, react: &react };
             let mut x = vec![0.0; self.layout.size];
-            self.newton(&mut x, &ctx, self.options.max_iter_dc).map_err(|f| self.map_fail(f, Some(0.0)))?;
-            x
+            match self.newton(&mut x, &ctx, self.options.max_iter_dc) {
+                Ok(_) => Ok(x),
+                Err(NewtonFail::Singular(r)) => Err(self.map_fail(NewtonFail::Singular(r), Some(0.0))),
+                Err(NewtonFail::NoConvergence) => {
+                    // Rückfallebene wie beim Arbeitspunkt: Quellen hochfahren
+                    let mut x = vec![0.0; self.layout.size];
+                    let (mut scale, mut step) = (0.0_f64, 0.1_f64);
+                    while scale < 1.0 {
+                        let next = (scale + step).min(1.0);
+                        let mut trial = x.clone();
+                        let ctx = Ctx { t: 0.0, mode: Mode::InitIc, src_scale: next, g_extra: 0.0, react: &react };
+                        if self.newton(&mut trial, &ctx, self.options.max_iter_dc).is_ok() {
+                            x = trial;
+                            scale = next;
+                            step = (step * 1.5).min(0.25);
+                        } else {
+                            step /= 4.0;
+                            if step < 1e-7 {
+                                return Err(SimError::NoConvergence { time: Some(0.0) });
+                            }
+                        }
+                    }
+                    Ok(x)
+                }
+            }
         } else {
-            self.solve_dc(0.0)?
-        };
+            self.solve_dc(0.0)
+        }
+    }
+
+    /// Startzustand einer schrittweisen Transientenanalyse aus einer Anfangslösung.
+    pub fn tran_state(&self, x0: Vec<f64>, use_ic: bool) -> TranState {
+        let mut react = vec![Reactive::default(); self.circuit.elements().len()];
         for (ei, e) in self.circuit.elements().iter().enumerate() {
             match e.kind {
                 ElementKind::Capacitor { a, b, ic, .. } => {
-                    let v = if opts.use_ic { ic.unwrap_or(0.0) } else { volt(&x0, a) - volt(&x0, b) };
+                    let v = if use_ic { ic.unwrap_or(0.0) } else { volt(&x0, a) - volt(&x0, b) };
                     react[ei] = Reactive { v, i: 0.0 };
                 }
                 ElementKind::Inductor { a, b, .. } => {
                     let br = self.layout.branch[ei].unwrap();
                     react[ei] = Reactive { v: volt(&x0, a) - volt(&x0, b), i: x0[br] };
-                    if !opts.use_ic {
+                    if !use_ic {
                         react[ei].v = 0.0;
                     }
+                }
+                ElementKind::OpAmp { p, n, vcc, vee, model, .. } => {
+                    let vt = model.eval(volt(&x0, p) - volt(&x0, n), volt(&x0, vcc), volt(&x0, vee)).v_target;
+                    react[ei] = Reactive { v: vt, i: OPAMP_STATE };
                 }
                 _ => {}
             }
         }
+        TranState { t: 0.0, hist: vec![(0.0, x0.clone())], x: x0, react, after_bp: true, h: 0.0 }
+    }
 
-        let mut result = TranResult {
-            probe: Probe::new(self.circuit),
-            time: vec![0.0],
-            x: vec![x0.clone()],
-            currents: vec![self.element_currents(&x0, &react, 0.0)],
-        };
+    /// Markiert eine Unstetigkeit (Knickstelle einer Quelle, umgeschalteter Logikausgang):
+    /// Der nächste Schritt rechnet Euler-rückwärts und beginnt klein.
+    pub fn mark_discontinuity(&self, st: &mut TranState, gap: f64, opts: &TranOptions) {
+        st.after_bp = true;
+        st.hist.clear();
+        st.hist.push((st.t, st.x.clone()));
+        st.h = opts.h_max.min(gap.max(opts.h_min * 10.0)) * 0.02;
+    }
 
-        let bps = self.breakpoints(opts.t_stop);
-        let mut bp_i = 0;
-        let mut t = 0.0;
-        let mut x = x0;
-        let mut after_bp = true;
-        let mut hist: Vec<(f64, Vec<f64>)> = vec![(0.0, x.clone())];
-        let mut h = opts.h_max.min(bps[0]) * 0.02;
-
-        while bp_i < bps.len() {
-            let next_bp = bps[bp_i];
-            let mut t_new = t + h;
-            let mut hit = false;
-            if t_new >= next_bp || next_bp - t_new < 0.2 * h {
-                t_new = next_bp;
-                hit = true;
-            }
-            let h_eff = t_new - t;
-            let method = if after_bp { Method::BackwardEuler } else { Method::Trapezoidal };
+    /// Rechnet genau einen angenommenen Zeitschritt, höchstens bis `t_limit`.
+    /// `check` sieht jeden vorläufigen Schritt (t, x, t_neu, x_neu) und kann ihn
+    /// verkürzen lassen (z. B. um eine Schaltschwelle genau zu treffen).
+    /// Gibt `true` zurück, wenn `t_limit` erreicht wurde.
+    pub fn tran_step(&mut self, st: &mut TranState, t_limit: f64, opts: &TranOptions, check: &mut StepChecker) -> Result<bool, SimError> {
+        let nv = self.layout.n_nodes - 1;
+        let mut forced: Option<f64> = None;
+        let mut retries = 0;
+        loop {
+            let (t_new, hit) = match forced {
+                Some(tf) => (tf, false),
+                None => {
+                    let t_new = st.t + st.h;
+                    if t_new >= t_limit || t_limit - t_new < 0.2 * st.h {
+                        (t_limit, true)
+                    } else {
+                        (t_new, false)
+                    }
+                }
+            };
+            let h_eff = t_new - st.t;
+            let method = if st.after_bp { Method::BackwardEuler } else { Method::Trapezoidal };
 
             // Startwert: Extrapolation, falls verfügbar
-            let mut x_new = if hist.len() >= 2 && !after_bp {
-                let (t1, x1) = &hist[hist.len() - 2];
-                let (t2, x2) = &hist[hist.len() - 1];
+            let mut x_new = if st.hist.len() >= 2 && !st.after_bp {
+                let (t1, x1) = &st.hist[st.hist.len() - 2];
+                let (t2, x2) = &st.hist[st.hist.len() - 1];
                 let f = (t_new - t2) / (t2 - t1);
                 x2.iter().zip(x1).map(|(b, a)| b + (b - a) * f).collect()
             } else {
-                x.clone()
+                st.x.clone()
             };
-            let ctx = Ctx { t: t_new, mode: Mode::Tran { h: h_eff, method }, src_scale: 1.0, g_extra: 0.0, react: &react };
+            let ctx = Ctx { t: t_new, mode: Mode::Tran { h: h_eff, method }, src_scale: 1.0, g_extra: 0.0, react: &st.react };
             match self.newton(&mut x_new, &ctx, self.options.max_iter_tran) {
                 Ok(_) => {}
                 Err(NewtonFail::Singular(r)) => return Err(self.map_fail(NewtonFail::Singular(r), Some(t_new))),
                 Err(NewtonFail::NoConvergence) => {
                     self.stats.rejected_steps += 1;
-                    h = h_eff / 8.0;
-                    if h < opts.h_min {
-                        return Err(SimError::TimestepTooSmall { time: t });
+                    st.h = h_eff / 8.0;
+                    forced = None;
+                    if st.h < opts.h_min {
+                        return Err(SimError::TimestepTooSmall { time: st.t });
                     }
                     continue;
                 }
@@ -642,11 +816,11 @@ impl<'c> Simulator<'c> {
             // Trapezregel hat Fehlerkonstante 1/12, quadratische Extrapolation 1,
             // daher LTE ≈ |x_korr − x_präd| / 13.
             let mut growth = 2.0;
-            if method == Method::Trapezoidal && hist.len() >= 3 {
-                let k = hist.len();
-                let (ta, xa) = (&hist[k - 3].0, &hist[k - 3].1);
-                let (tb, xb) = (&hist[k - 2].0, &hist[k - 2].1);
-                let (tc, xc) = (&hist[k - 1].0, &hist[k - 1].1);
+            if method == Method::Trapezoidal && st.hist.len() >= 3 {
+                let k = st.hist.len();
+                let (ta, xa) = (&st.hist[k - 3].0, &st.hist[k - 3].1);
+                let (tb, xb) = (&st.hist[k - 2].0, &st.hist[k - 2].1);
+                let (tc, xc) = (&st.hist[k - 1].0, &st.hist[k - 1].1);
                 let la = (t_new - tb) * (t_new - tc) / ((ta - tb) * (ta - tc));
                 let lb = (t_new - ta) * (t_new - tc) / ((tb - ta) * (tb - tc));
                 let lc = (t_new - ta) * (t_new - tb) / ((tc - ta) * (tc - tb));
@@ -659,54 +833,119 @@ impl<'c> Simulator<'c> {
                 }
                 if ratio > 1.0 && h_eff > opts.h_min * 10.0 {
                     self.stats.rejected_steps += 1;
-                    h = h_eff * (0.9 * ratio.powf(-1.0 / 3.0)).max(0.2);
+                    st.h = h_eff * (0.9 * ratio.powf(-1.0 / 3.0)).max(0.2);
+                    forced = None;
                     continue;
                 }
                 growth = if ratio > 0.0 { (0.9 * ratio.powf(-1.0 / 3.0)).clamp(0.5, 2.0) } else { 2.0 };
+            }
+
+            if let StepCheck::Retry(tr) = check(st.t, &st.x, t_new, &x_new) {
+                if tr > st.t && tr < t_new && retries < 40 {
+                    retries += 1;
+                    forced = Some(tr);
+                    continue;
+                }
             }
 
             // Schritt annehmen: Zustände der Energiespeicher fortschreiben
             for (ei, e) in self.circuit.elements().iter().enumerate() {
                 match e.kind {
                     ElementKind::Capacitor { a, b, c, .. } => {
-                        let st = react[ei];
+                        let rs = st.react[ei];
                         let v = volt(&x_new, a) - volt(&x_new, b);
                         let i = match method {
-                            Method::BackwardEuler => c / h_eff * (v - st.v),
-                            Method::Trapezoidal => 2.0 * c / h_eff * (v - st.v) - st.i,
+                            Method::BackwardEuler => c / h_eff * (v - rs.v),
+                            Method::Trapezoidal => 2.0 * c / h_eff * (v - rs.v) - rs.i,
                         };
-                        react[ei] = Reactive { v, i };
+                        st.react[ei] = Reactive { v, i };
                     }
                     ElementKind::Inductor { a, b, .. } => {
                         let br = self.layout.branch[ei].unwrap();
-                        react[ei] = Reactive { v: volt(&x_new, a) - volt(&x_new, b), i: x_new[br] };
+                        st.react[ei] = Reactive { v: volt(&x_new, a) - volt(&x_new, b), i: x_new[br] };
+                    }
+                    ElementKind::OpAmp { p, n, vcc, vee, model, .. } => {
+                        let target = model.eval(volt(&x_new, p) - volt(&x_new, n), volt(&x_new, vcc), volt(&x_new, vee)).v_target;
+                        let a = h_eff / model.tau;
+                        st.react[ei] = Reactive { v: (st.react[ei].v + a * target) / (1.0 + a), i: OPAMP_STATE };
                     }
                     _ => {}
                 }
             }
             self.stats.accepted_steps += 1;
-            t = t_new;
-            x = x_new;
-            result.time.push(t);
-            result.currents.push(self.element_currents(&x, &react, t));
-            result.x.push(x.clone());
-
-            if hit {
-                bp_i += 1;
-                after_bp = true;
-                hist.clear();
-                hist.push((t, x.clone()));
-                if bp_i < bps.len() {
-                    let gap = bps[bp_i] - t;
-                    h = opts.h_max.min(gap) * 0.02;
+            st.t = t_new;
+            st.x = x_new;
+            st.after_bp = false;
+            st.hist.push((st.t, st.x.clone()));
+            if st.hist.len() > 3 {
+                st.hist.remove(0);
+            }
+            if hit || forced.is_some() {
+                // verkürzter Schritt: Schrittweite nur verkleinern, wenn der Fehler es verlangt
+                if growth < 1.0 {
+                    st.h = st.h.min(h_eff * growth);
                 }
             } else {
-                after_bp = false;
-                hist.push((t, x.clone()));
-                if hist.len() > 3 {
-                    hist.remove(0);
+                st.h = (h_eff * growth).min(opts.h_max);
+            }
+            return Ok(hit);
+        }
+    }
+
+    /// Leeres Ergebnis mit dem Anfangszustand.
+    pub fn tran_result(&self, st: &TranState) -> TranResult {
+        let mut r = TranResult { probe: Probe::new(&self.circuit), time: Vec::new(), x: Vec::new(), currents: Vec::new() };
+        self.record(&mut r, st);
+        r
+    }
+
+    /// Hängt den aktuellen Zustand an ein Ergebnis an.
+    pub fn record(&self, res: &mut TranResult, st: &TranState) {
+        res.time.push(st.t);
+        res.currents.push(self.element_currents(&st.x, &st.react, st.t));
+        res.x.push(st.x.clone());
+    }
+
+    /// Momentaufnahme des aktuellen Zustands, auswertbar wie ein Arbeitspunkt.
+    pub fn snapshot(&self, st: &TranState) -> OpResult {
+        let currents = self.element_currents(&st.x, &st.react, st.t);
+        let term = self.terminal_currents(&st.x, &currents);
+        OpResult { probe: Probe::new(&self.circuit), x: st.x.clone(), currents, term }
+    }
+
+    /// Knickstellen aller Quellen im Intervall (t0, t1].
+    pub fn source_breakpoints(&self, t0: f64, t1: f64) -> Vec<f64> {
+        let mut bp = Vec::new();
+        for e in self.circuit.elements() {
+            if let ElementKind::VSource { wave, .. } | ElementKind::ISource { wave, .. } = &e.kind {
+                wave.breakpoints_between(t0, t1, &mut bp);
+            }
+        }
+        bp.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        bp
+    }
+
+    /// Simuliert den zeitlichen Verlauf von 0 bis `opts.t_stop`.
+    ///
+    /// Trapezregel mit Schrittweitensteuerung über den lokalen Abbruchfehler;
+    /// direkt nach Knickstellen der Quellen ein Schritt Euler-rückwärts, um
+    /// das typische Klingeln der Trapezregel zu vermeiden.
+    pub fn transient(&mut self, opts: &TranOptions) -> Result<TranResult, SimError> {
+        let x0 = self.initial_solution(opts.use_ic)?;
+        let mut st = self.tran_state(x0, opts.use_ic);
+        let mut result = self.tran_result(&st);
+        let bps = self.breakpoints(opts.t_stop);
+        st.h = opts.h_max.min(bps[0]) * 0.02;
+        let mut bp_i = 0;
+        while bp_i < bps.len() {
+            let hit = self.tran_step(&mut st, bps[bp_i], opts, &mut |_, _, _, _| StepCheck::Accept)?;
+            self.record(&mut result, &st);
+            if hit {
+                bp_i += 1;
+                if bp_i < bps.len() {
+                    let gap = bps[bp_i] - st.t;
+                    self.mark_discontinuity(&mut st, gap, opts);
                 }
-                h = (h_eff * growth).min(opts.h_max);
             }
         }
         Ok(result)
@@ -734,6 +973,18 @@ impl<'c> Simulator<'c> {
                     let p = model.polarity();
                     p * model.eval(p * (volt(x, *g) - volt(x, *s)), p * (volt(x, *d) - volt(x, *s))).id
                 }
+                // Logikausgang, OpAmp: Strom, der am Ausgang herausfließt
+                ElementKind::Driver { out, hi, lo, r } => self.drive[ei].map_or(0.0, |f| {
+                    let vo = volt(x, *out);
+                    (f * (volt(x, *hi) - vo) + (1.0 - f) * (volt(x, *lo) - vo)) / r
+                }),
+                ElementKind::OpAmp { p, n, out, vcc, vee, model } => {
+                    let vt = match react.get(ei) {
+                        Some(r) if r.i == OPAMP_STATE => r.v,
+                        _ => model.eval(volt(x, *p) - volt(x, *n), volt(x, *vcc), volt(x, *vee)).v_target,
+                    };
+                    (vt - volt(x, *out)) / model.r_out
+                }
             })
             .collect()
     }
@@ -752,6 +1003,22 @@ impl<'c> Simulator<'c> {
                     vec![ic, ib, -(ic + ib)]
                 }
                 ElementKind::Mosfet { .. } => vec![main[ei], 0.0, -main[ei]],
+                ElementKind::Driver { out, hi, lo, r } => match self.drive[ei] {
+                    Some(f) => {
+                        let vo = volt(x, *out);
+                        let (ih, il) = (f * (volt(x, *hi) - vo) / r, (1.0 - f) * (volt(x, *lo) - vo) / r);
+                        vec![-(ih + il), ih, il]
+                    }
+                    None => vec![0.0; 3],
+                },
+                ElementKind::OpAmp { .. } => {
+                    let i = main[ei];
+                    if i >= 0.0 {
+                        vec![0.0, 0.0, -i, i, 0.0]
+                    } else {
+                        vec![0.0, 0.0, -i, 0.0, i]
+                    }
+                }
                 // Quellen: Hauptstrom ist der abgegebene Strom (aus dem Pluspol heraus)
                 ElementKind::VSource { .. } | ElementKind::ISource { .. } => vec![-main[ei], main[ei]],
                 _ => vec![main[ei], -main[ei]],
@@ -825,6 +1092,21 @@ impl OpResult {
     /// Ströme in jeden Anschluss hinein (Transistor: [I_C, I_B, I_E] bzw. [I_D, I_G, I_S]).
     pub fn terminal_currents(&self, elem: &str) -> Result<Vec<f64>, SimError> {
         Ok(self.term[self.probe.elem(elem)?].clone())
+    }
+
+    /// Knotennummern der Anschlüsse.
+    pub fn terminal_nodes(&self, elem: &str) -> Result<Vec<NodeId>, SimError> {
+        Ok(self.probe.terminals[self.probe.elem(elem)?].clone())
+    }
+
+    /// Namen aller Bauteile.
+    pub fn element_names(&self) -> impl Iterator<Item = &str> {
+        self.probe.elems.keys().map(|s| s.as_str())
+    }
+
+    /// Spannung eines Knotens nach Nummer.
+    pub fn node_voltage(&self, node: NodeId) -> f64 {
+        volt(&self.x, node)
     }
 
     /// Spannungen an den Anschlüssen gegen Masse.

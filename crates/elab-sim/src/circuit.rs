@@ -1,6 +1,7 @@
 //! Schaltungsbeschreibung: Knoten und Bauteile.
 
 use crate::diode::DiodeModel;
+use crate::opamp::OpAmpModel;
 use crate::transistor::{BjtModel, MosModel};
 use crate::waveform::Waveform;
 use std::collections::HashMap;
@@ -83,6 +84,27 @@ pub enum ElementKind {
         s: NodeId,
         model: MosModel,
     },
+    /// Ausgangsstufe eines Logikbausteins (Mixed-Signal): verbindet `out` über `r`
+    /// anteilig mit `hi` und `lo`. Der Anteil `f` (1 = High, 0 = Low, dazwischen
+    /// z. B. ein DAC-Pegel, keiner = hochohmig) wird zur Laufzeit über
+    /// [`Simulator::set_drive`](crate::Simulator::set_drive) gesetzt:
+    /// Leitwert f/r nach `hi`, (1 − f)/r nach `lo`.
+    Driver {
+        out: NodeId,
+        hi: NodeId,
+        lo: NodeId,
+        r: f64,
+    },
+    /// Operationsverstärker mit Versorgung: nichtinvertierender Eingang `p`,
+    /// invertierender `n`, Ausgang `out`, Versorgung `vcc`/`vee`.
+    OpAmp {
+        p: NodeId,
+        n: NodeId,
+        out: NodeId,
+        vcc: NodeId,
+        vee: NodeId,
+        model: OpAmpModel,
+    },
 }
 
 impl ElementKind {
@@ -96,6 +118,8 @@ impl ElementKind {
             Diode { a, k, .. } => vec![a, k],
             Bjt { c, b, e, .. } => vec![c, b, e],
             Mosfet { d, g, s, .. } => vec![d, g, s],
+            Driver { out, hi, lo, .. } => vec![out, hi, lo],
+            OpAmp { p, n, out, vcc, vee, .. } => vec![p, n, out, vcc, vee],
         }
     }
 
@@ -105,7 +129,7 @@ impl ElementKind {
     }
 
     pub(crate) fn is_nonlinear(&self) -> bool {
-        matches!(self, ElementKind::Diode { .. } | ElementKind::Bjt { .. } | ElementKind::Mosfet { .. })
+        matches!(self, ElementKind::Diode { .. } | ElementKind::Bjt { .. } | ElementKind::Mosfet { .. } | ElementKind::OpAmp { .. })
     }
 
     /// Kurzname des Bauteiltyps für Meldungen.
@@ -121,6 +145,8 @@ impl ElementKind {
             Switch { .. } => "Schalter",
             Bjt { .. } => "Transistor",
             Mosfet { .. } => "MOSFET",
+            Driver { .. } => "Logikausgang",
+            OpAmp { .. } => "Operationsverstärker",
         }
     }
 }
@@ -346,6 +372,10 @@ fn validate(name: &str, kind: &ElementKind) -> Result<(), SimError> {
         Diode { model, .. } if !pos(model.is) || !pos(model.n) => bad("Is und n der Diode müssen positiv sein."),
         Switch { r_on, r_off, .. } if !pos(*r_on) || !pos(*r_off) => bad("Schalterwiderstände müssen positiv sein."),
         Bjt { model, .. } if !pos(model.is) || !pos(model.bf) || !pos(model.br) => bad("Is, βF und βR müssen positiv sein."),
+        Driver { r, .. } if !pos(*r) => bad("Der Ausgangswiderstand muss größer als 0 Ω sein."),
+        OpAmp { model, .. } if !pos(model.gain) || !pos(model.r_out) || !pos(model.tau) => {
+            bad("Verstärkung und Ausgangswiderstand müssen positiv sein.")
+        }
         Mosfet { model, .. } if !pos(model.k) || !model.vth.is_finite() || model.lambda < 0.0 => bad("K muss positiv, λ darf nicht negativ sein."),
         _ => {
             let t = kind.terminals();

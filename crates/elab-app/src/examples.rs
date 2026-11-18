@@ -1,6 +1,6 @@
 //! Mitgelieferte Beispielschaltungen.
 
-use crate::model::{DiodeType, Document, GateType as G, LedColor, PartKind as K, TransistorType as T, P};
+use crate::model::{DiodeType, Document, GateType as G, LedColor, LogicFamily as F, OpAmpType, PartKind as K, TransistorType as T, P};
 
 /// Eine Beispielschaltung mit Beschreibung und passender Oszilloskop-Zeitbasis.
 pub struct Example {
@@ -10,6 +10,13 @@ pub struct Example {
     pub doc: Document,
     /// Digitalschaltung (Palette und Messgeräte passend umschalten)
     pub digital: bool,
+}
+
+impl Example {
+    /// Enthält das Beispiel echte Bausteine mit Versorgung?
+    pub fn doc_has_ic(&self) -> bool {
+        self.doc.parts.iter().any(|p| p.kind.is_ic())
+    }
 }
 
 struct B(Document);
@@ -398,6 +405,224 @@ pub fn all() -> Vec<Example> {
                 .wire(&[(21, -5), (21, 3)])
                 .done(),
         },
+        // ---------------- Echte Bausteine (Mixed-Signal) ----------------
+        Example {
+            title: "NAND-Baustein (74HC00) mit Tastern",
+            summary: "Ein echter Logik-IC an 5 V. Taster mit Pull-down-Widerständen liefern die Eingangsspannungen, \
+                      die LED zeigt den Ausgang. Halte beide Taster gedrückt: Erst dann geht die LED aus.",
+            scope_t: 10e-3,
+            digital: false,
+            doc: B::new("NAND-Baustein")
+                .part(K::DcVoltage { v: 5.0 }, 0, 0, 0)
+                .named(K::PushButton, 6, -6, 1, "S_A")
+                .named(K::PushButton, 12, -6, 1, "S_B")
+                .part(K::Resistor { r: 10e3 }, 6, 5, 1)
+                .part(K::Resistor { r: 10e3 }, 12, 5, 1)
+                .named(K::GateIc { gate: G::Nand, family: F::Hc }, 22, 0, 0, "U1")
+                .part(K::Resistor { r: 470.0 }, 31, 0, 0)
+                .part(K::Led { color: LedColor::Rot }, 33, 5, 1)
+                .part(K::Ground, 16, 10, 0)
+                .named(K::Probe, 9, -1, 0, "A")
+                .named(K::Probe, 15, 1, 0, "B")
+                .named(K::Probe, 25, 0, 0, "Y")
+                .wire(&[(0, -2), (0, -10), (22, -10), (22, -3)])
+                .wire(&[(6, -10), (6, -8)])
+                .wire(&[(12, -10), (12, -8)])
+                .wire(&[(6, -4), (6, 3)])
+                .wire(&[(12, -4), (12, 3)])
+                .wire(&[(6, -1), (19, -1)])
+                .wire(&[(12, 1), (19, 1)])
+                .wire(&[(25, 0), (29, 0)])
+                .wire(&[(33, 0), (33, 3)])
+                .wire(&[(0, 2), (0, 10), (33, 10), (33, 7)])
+                .wire(&[(6, 7), (6, 10)])
+                .wire(&[(12, 7), (12, 10)])
+                .wire(&[(22, 3), (22, 10)])
+                .done(),
+        },
+        Example {
+            title: "3,3 V trifft 5 V: 74HC und 74HCT",
+            summary: "Ein 3,3-V-Signal (wie von einem ESP32) an zwei UND-Bausteinen mit 5 V. Der 74HC braucht für eine 1 \
+                      mindestens 3,5 V und sieht X, der 74HCT erkennt schon 2 V als 1. Öffne den Schalter per Doppelklick.",
+            scope_t: 10e-3,
+            digital: false,
+            doc: B::new("3,3 V trifft 5 V")
+                .named(K::DcVoltage { v: 5.0 }, 0, 0, 0, "V_5V")
+                .named(K::DcVoltage { v: 3.3 }, 8, 0, 0, "V_3V3")
+                .part(K::Switch { closed: true }, 12, -4, 0)
+                .part(K::Resistor { r: 10e3 }, 18, 10, 1)
+                .named(K::GateIc { gate: G::And, family: F::Hc }, 24, 0, 0, "U1")
+                .named(K::GateIc { gate: G::And, family: F::Hct }, 40, 0, 0, "U2")
+                .part(K::Resistor { r: 470.0 }, 29, 0, 0)
+                .part(K::Led { color: LedColor::Gruen }, 31, 2, 1)
+                .part(K::Resistor { r: 470.0 }, 45, 0, 0)
+                .part(K::Led { color: LedColor::Gruen }, 47, 2, 1)
+                .part(K::Ground, 0, 3, 0)
+                .part(K::Ground, 8, 3, 0)
+                .part(K::Ground, 18, 12, 0)
+                .part(K::Ground, 24, 4, 0)
+                .part(K::Ground, 31, 5, 0)
+                .part(K::Ground, 40, 4, 0)
+                .part(K::Ground, 47, 5, 0)
+                .named(K::Probe, 18, 2, 0, "Signal")
+                .named(K::Probe, 27, 0, 0, "Y_HC")
+                .named(K::Probe, 43, 0, 0, "Y_HCT")
+                .wire(&[(0, -2), (0, -10), (40, -10), (40, -3)])
+                .wire(&[(24, -10), (24, -3)])
+                .wire(&[(0, 2), (0, 3)])
+                .wire(&[(8, 2), (8, 3)])
+                .wire(&[(8, -2), (8, -4), (10, -4)])
+                .wire(&[(14, -4), (18, -4), (18, 8), (37, 8), (37, 1)])
+                .wire(&[(21, 8), (21, 1)])
+                .wire(&[(21, -1), (21, 1)])
+                .wire(&[(37, -1), (37, 1)])
+                .wire(&[(24, 3), (24, 4)])
+                .wire(&[(40, 3), (40, 4)])
+                .wire(&[(31, 4), (31, 5)])
+                .wire(&[(47, 4), (47, 5)])
+                .done(),
+        },
+        Example {
+            title: "Schmitt-Trigger-Oszillator (74HC14)",
+            summary: "Der Kondensator lädt über R1 bis zur oberen Schaltschwelle, dann kippt der Ausgang und entlädt ihn bis zur \
+                      unteren. Die LED blinkt etwa 2,6-mal pro Sekunde. Der Messpunkt U_C zeigt die Hysterese.",
+            scope_t: 2.0,
+            digital: false,
+            doc: B::new("Schmitt-Trigger-Oszillator")
+                .part(K::DcVoltage { v: 5.0 }, 0, 0, 0)
+                .named(K::SchmittIc { family: F::Hc }, 14, 0, 0, "U1")
+                .part(K::Resistor { r: 47e3 }, 14, 9, 0)
+                .part(K::Capacitor { c: 10e-6 }, 5, 3, 1)
+                .part(K::Resistor { r: 1e3 }, 25, 0, 0)
+                .part(K::Led { color: LedColor::Rot }, 29, 2, 1)
+                .part(K::Ground, 0, 3, 0)
+                .part(K::Ground, 5, 6, 0)
+                .part(K::Ground, 14, 4, 0)
+                .part(K::Ground, 29, 5, 0)
+                .named(K::Probe, 7, 0, 0, "U_C")
+                .named(K::Probe, 18, 0, 0, "U_aus")
+                .wire(&[(0, -2), (0, -6), (14, -6), (14, -3)])
+                .wire(&[(0, 2), (0, 3)])
+                .wire(&[(5, 0), (11, 0)])
+                .wire(&[(5, 0), (5, 1)])
+                .wire(&[(5, 5), (5, 6)])
+                .wire(&[(14, 3), (14, 4)])
+                .wire(&[(17, 0), (23, 0)])
+                .wire(&[(20, 0), (20, 9), (16, 9)])
+                .wire(&[(12, 9), (8, 9), (8, 0)])
+                .wire(&[(27, 0), (29, 0)])
+                .wire(&[(29, 4), (29, 5)])
+                .done(),
+        },
+        Example {
+            title: "555-Blinker",
+            summary: "Der Timer NE555 lädt C1 über R_A und R_B bis ⅔ der Versorgung und entlädt ihn über R_B bis ⅓. \
+                      Die LED hängt zwischen +9 V und dem Ausgang: Sie leuchtet, während der Ausgang low ist (etwa 1,4 Hz).",
+            scope_t: 3.0,
+            digital: false,
+            doc: B::new("555-Blinker")
+                .part(K::DcVoltage { v: 9.0 }, 0, 0, 0)
+                .named(K::Timer555, 20, 0, 0, "U1")
+                .named(K::Resistor { r: 10e3 }, 30, -4, 1, "R_A")
+                .named(K::Resistor { r: 47e3 }, 30, 5, 1, "R_B")
+                .named(K::Capacitor { c: 10e-6 }, 10, 5, 1, "C1")
+                .part(K::Resistor { r: 1e3 }, 26, -4, 1)
+                .part(K::Led { color: LedColor::Rot }, 26, -8, 1)
+                .part(K::Ground, 0, 3, 0)
+                .part(K::Ground, 10, 8, 0)
+                .part(K::Ground, 20, 6, 0)
+                .named(K::Probe, 13, 5, 0, "U_C")
+                .named(K::Probe, 25, -1, 0, "OUT")
+                .wire(&[(0, -2), (0, -12), (30, -12), (30, -6)])
+                .wire(&[(19, -5), (19, -12)])
+                .wire(&[(21, -5), (21, -12)])
+                .wire(&[(26, -12), (26, -10)])
+                .wire(&[(24, -1), (26, -1), (26, -2)])
+                .wire(&[(30, -2), (30, 3)])
+                .wire(&[(24, 1), (30, 1)])
+                .wire(&[(30, 7), (30, 11), (13, 11), (13, -2), (16, -2)])
+                .wire(&[(13, 0), (16, 0)])
+                .wire(&[(10, 3), (13, 3)])
+                .wire(&[(10, 7), (10, 8)])
+                .wire(&[(20, 5), (20, 6)])
+                .wire(&[(0, 2), (0, 3)])
+                .done(),
+        },
+        Example {
+            title: "OpAmp-Verstärker (LM358)",
+            summary: "Nichtinvertierender Verstärker mit V = 1 + R2/R1 = 3 an einfacher 12-V-Versorgung. Dreh das Poti hoch: \
+                      Ab etwa 3,5 V am Eingang bleibt der Ausgang bei 10,5 V stehen, der LM358 ist übersteuert.",
+            scope_t: 10e-3,
+            digital: false,
+            doc: B::new("OpAmp-Verstärker")
+                .part(K::DcVoltage { v: 12.0 }, -8, 0, 0)
+                .named(K::Potentiometer { r: 10e3, pos: 0.25 }, -2, 8, 1, "P1")
+                .named(K::OpAmp { kind: OpAmpType::Lm358 }, 16, 2, 0, "U1")
+                .named(K::Resistor { r: 10e3 }, 8, 3, 1, "R1")
+                .named(K::Resistor { r: 20e3 }, 13, -4, 0, "R2")
+                .named(K::Voltmeter, 4, 11, 1, "U_ein")
+                .named(K::Voltmeter, 24, 5, 1, "U_aus")
+                .part(K::Ground, -8, 3, 0)
+                .part(K::Ground, -2, 11, 0)
+                .part(K::Ground, 8, 6, 0)
+                .part(K::Ground, 16, 6, 0)
+                .part(K::Ground, 4, 14, 0)
+                .part(K::Ground, 24, 8, 0)
+                .wire(&[(-8, -2), (-8, -12), (16, -12), (16, -1)])
+                .wire(&[(-2, 6), (-2, -12)])
+                .wire(&[(-8, 2), (-8, 3)])
+                .wire(&[(-2, 10), (-2, 11)])
+                .wire(&[(0, 8), (11, 8), (11, 3), (13, 3)])
+                .wire(&[(13, 1), (8, 1)])
+                .wire(&[(8, 5), (8, 6)])
+                .wire(&[(10, 1), (10, -4), (11, -4)])
+                .wire(&[(15, -4), (21, -4), (21, 2), (19, 2)])
+                .wire(&[(21, 2), (24, 2), (24, 3)])
+                .wire(&[(16, 5), (16, 6)])
+                .wire(&[(4, 8), (4, 9)])
+                .wire(&[(4, 13), (4, 14)])
+                .wire(&[(24, 7), (24, 8)])
+                .done(),
+        },
+        Example {
+            title: "ADC und DAC (4 Bit)",
+            summary: "Der A/D-Umsetzer macht aus der Poti-Spannung eine 4-Bit-Zahl, der D/A-Umsetzer daraus wieder eine Spannung. \
+                      Dreh das Poti: Die Bits zählen binär, U_DAC springt in Stufen von 5 V / 16 = 0,31 V.",
+            scope_t: 10e-3,
+            digital: false,
+            doc: B::new("ADC und DAC")
+                .part(K::DcVoltage { v: 5.0 }, -6, 0, 0)
+                .named(K::Potentiometer { r: 10e3, pos: 0.4 }, 1, 0, 1, "P1")
+                .named(K::Adc4, 14, 0, 0, "U1")
+                .named(K::Dac4, 26, 0, 0, "U2")
+                .named(K::Voltmeter, 6, 4, 1, "U_ein")
+                .named(K::Voltmeter, 34, 3, 1, "U_DAC")
+                .part(K::Ground, -6, 3, 0)
+                .part(K::Ground, 1, 3, 0)
+                .part(K::Ground, 6, 7, 0)
+                .part(K::Ground, 14, 7, 0)
+                .part(K::Ground, 26, 7, 0)
+                .part(K::Ground, 34, 6, 0)
+                .wire(&[(-6, -2), (-6, -9), (27, -9), (27, -6)])
+                .wire(&[(1, -2), (1, -9)])
+                .wire(&[(13, -6), (13, -9)])
+                .wire(&[(15, -6), (15, -9)])
+                .wire(&[(25, -6), (25, -9)])
+                .wire(&[(-6, 2), (-6, 3)])
+                .wire(&[(1, 2), (1, 3)])
+                .wire(&[(3, 0), (11, 0)])
+                .wire(&[(6, 0), (6, 2)])
+                .wire(&[(6, 6), (6, 7)])
+                .wire(&[(17, -3), (23, -3)])
+                .wire(&[(17, -1), (23, -1)])
+                .wire(&[(17, 1), (23, 1)])
+                .wire(&[(17, 3), (23, 3)])
+                .wire(&[(14, 6), (14, 7)])
+                .wire(&[(26, 6), (26, 7)])
+                .wire(&[(29, 0), (34, 0), (34, 1)])
+                .wire(&[(34, 5), (34, 6)])
+                .done(),
+        },
     ]
 }
 
@@ -411,12 +636,120 @@ mod tests {
             let nl = netlist::build(&ex.doc);
             assert!(nl.error.is_none(), "{}: {:?}", ex.title, nl.error);
             assert!(nl.excluded.is_empty(), "{}: nicht verbunden: {:?}", ex.title, nl.excluded);
-            let op = sim::operating_point(&nl).unwrap_or_else(|e| panic!("{}: {e}", ex.title));
+            let op = if nl.mixed.is_some() {
+                let mut ms = sim::mixed_sim(&nl, 1e-3).unwrap_or_else(|e| panic!("{}: {e}", ex.title));
+                ms.advance(0.05, None).unwrap_or_else(|e| panic!("{}: {e}", ex.title));
+                sim::mixed_view(&nl, &ms)
+            } else {
+                sim::operating_point(&nl).unwrap_or_else(|e| panic!("{}: {e}", ex.title))
+            };
             let has_dc = ex.doc.parts.iter().any(|p| matches!(p.kind, crate::model::PartKind::DcVoltage { .. }));
             assert!(!has_dc || op.max_abs_v() > 0.0, "{}", ex.title);
             let scope = sim::record(&ex.doc, &nl, ex.scope_t).unwrap_or_else(|e| panic!("{}: {e}", ex.title));
             assert_eq!(scope.traces.len(), sim::probes(&ex.doc).len(), "{}", ex.title);
         }
+    }
+
+    #[test]
+    fn mixed_examples_behave() {
+        use crate::model::PartKind;
+        use elab_sim::digital::Logic;
+        use std::collections::HashSet;
+        let all = super::all();
+        let find = |t: &str| all.iter().find(|e| e.title.starts_with(t)).unwrap();
+        let id = |doc: &crate::model::Document, name: &str| doc.part_by_name(name).unwrap().id;
+        let start = |doc: &crate::model::Document, pressed: &[&str]| {
+            let pressed: HashSet<u32> = pressed.iter().map(|n| id(doc, n)).collect();
+            let nl = netlist::build_with(doc, &pressed);
+            assert!(nl.error.is_none() && nl.excluded.is_empty(), "{:?} {:?}", nl.error, nl.excluded);
+            let ms = sim::mixed_sim(&nl, 1e-3).unwrap();
+            (nl, ms)
+        };
+        let probe_v = |nl: &netlist::Netlist, doc: &crate::model::Document, ms: &elab_sim::MixedSim, name: &str| {
+            let v = sim::mixed_view(nl, ms);
+            v.net_v[nl.pin_nets[&id(doc, name)][0]].unwrap()
+        };
+
+        // NAND: LED an, solange nicht beide Taster gedrückt sind
+        let ex = find("NAND-Baustein");
+        let led = id(&ex.doc, "LED1");
+        for (pressed, on) in [(&[][..], true), (&["S_A"][..], true), (&["S_B"][..], true), (&["S_A", "S_B"][..], false)] {
+            let (nl, ms) = start(&ex.doc, pressed);
+            let i = sim::mixed_view(&nl, &ms).parts[&led].i;
+            assert_eq!(i > 3e-3, on, "{pressed:?}: I_LED = {i}");
+            let y = probe_v(&nl, &ex.doc, &ms, "Y");
+            assert!(if on { y > 4.5 } else { y < 0.05 }, "{pressed:?}: Y = {y}");
+        }
+        // Versorgungsstrom = LED-Strom (plus Ruhestrom)
+        let (nl, ms) = start(&ex.doc, &[]);
+        let v = sim::mixed_view(&nl, &ms);
+        let u1 = v.parts[&id(&ex.doc, "U1")];
+        assert!((u1.u - 5.0).abs() < 1e-6 && (u1.i - v.parts[&led].i).abs() < 1e-5, "{u1:?}");
+        // offener Eingang: X
+        let mut d = ex.doc.clone();
+        let r1 = id(&d, "R1");
+        d.remove(&[r1].into(), &Default::default());
+        let nl = netlist::build(&d);
+        let ms = sim::mixed_sim(&nl, 1e-3).unwrap();
+        assert_eq!(ms.observer_values(0), &[Logic::X], "offener Eingang");
+        // 9 V: zerstört
+        let mut d = ex.doc.clone();
+        d.part_mut(id(&d, "V1")).unwrap().kind = PartKind::DcVoltage { v: 9.0 };
+        let nl = netlist::build(&d);
+        let ms = sim::mixed_sim(&nl, 1e-3).unwrap();
+        assert_eq!(ms.power(0), elab_sim::PowerState::Overvoltage);
+
+        // 3,3 V an HC und HCT
+        let ex = find("3,3 V trifft 5 V");
+        let (nl, ms) = start(&ex.doc, &[]);
+        let (hc, hct) = (probe_v(&nl, &ex.doc, &ms, "Y_HC"), probe_v(&nl, &ex.doc, &ms, "Y_HCT"));
+        assert!(hc > 1.5 && hc < 3.0, "HC sieht X: {hc}");
+        assert!(hct > 4.5, "HCT sieht 1: {hct}");
+
+        // Schmitt-Trigger-Oszillator: T ≈ 0,817 · R · C
+        let ex = find("Schmitt-Trigger");
+        let (nl, mut ms) = start(&ex.doc, &[]);
+        let res = ms.run(3.0).unwrap();
+        let net = &nl.nets[nl.pin_nets[&id(&ex.doc, "U_aus")][0]].name;
+        let v = res.voltage(net).unwrap();
+        let rises: Vec<f64> = (1..v.len()).filter(|&k| v[k - 1] < 2.5 && v[k] >= 2.5).map(|k| res.time[k]).collect();
+        let t = (rises[rises.len() - 1] - rises[1]) / (rises.len() - 2) as f64;
+        assert!((t - 0.817 * 47e3 * 10e-6).abs() < 0.03, "T = {t}");
+
+        // 555: Kondensator pendelt zwischen 3 V und 6 V, f ≈ 1,4 Hz
+        let ex = find("555-Blinker");
+        let (nl, mut ms) = start(&ex.doc, &[]);
+        let res = ms.run(5.0).unwrap();
+        let net = &nl.nets[nl.pin_nets[&id(&ex.doc, "U_C")][0]].name;
+        let vc = res.voltage(net).unwrap();
+        let late: Vec<f64> = vc.iter().zip(&res.time).filter(|(_, &t)| t > 2.0).map(|(v, _)| *v).collect();
+        let (mn, mx) = late.iter().fold((f64::MAX, f64::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+        assert!((mn - 3.0).abs() < 0.1 && (mx - 6.0).abs() < 0.1, "{mn} … {mx}");
+        let out = &nl.nets[nl.pin_nets[&id(&ex.doc, "OUT")][0]].name;
+        let vo = res.voltage(out).unwrap();
+        let rises: Vec<f64> = (1..vo.len()).filter(|&k| vo[k - 1] < 4.5 && vo[k] >= 4.5).map(|k| res.time[k]).collect();
+        let t = (rises[rises.len() - 1] - rises[1]) / (rises.len() - 2) as f64;
+        let t_exp = 0.693 * (10e3 + 2.0 * 47e3) * 10e-6;
+        assert!((t / t_exp - 1.0).abs() < 0.03, "T = {t} statt {t_exp}");
+
+        // OpAmp: V = 3, dann Übersteuerung bei etwa 10,5 V
+        let ex = find("OpAmp-Verstärker");
+        let (nl, ms) = start(&ex.doc, &[]);
+        let v = sim::mixed_view(&nl, &ms);
+        let (ue, ua) = (v.parts[&id(&ex.doc, "U_ein")].u, v.parts[&id(&ex.doc, "U_aus")].u);
+        assert!((ue - 3.0).abs() < 0.01 && (ua - 9.0).abs() < 0.01, "{ue} → {ua}");
+        let mut d = ex.doc.clone();
+        d.part_mut(id(&d, "P1")).unwrap().kind = PartKind::Potentiometer { r: 10e3, pos: 0.6 };
+        let (nl, ms) = start(&d, &[]);
+        let ua = sim::mixed_view(&nl, &ms).parts[&id(&d, "U_aus")].u;
+        assert!((ua - 10.48).abs() < 0.05, "übersteuert: {ua}");
+
+        // ADC → DAC
+        let ex = find("ADC und DAC");
+        let (nl, ms) = start(&ex.doc, &[]);
+        let v = sim::mixed_view(&nl, &ms);
+        let (ue, ud) = (v.parts[&id(&ex.doc, "U_ein")].u, v.parts[&id(&ex.doc, "U_DAC")].u);
+        assert!((ue - 2.0).abs() < 1e-3 && (ud - 5.0 * 6.0 / 16.0).abs() < 1e-3, "{ue} → {ud}");
     }
 
     #[test]

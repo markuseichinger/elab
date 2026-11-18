@@ -25,12 +25,16 @@ pub mod circuit;
 pub mod digital;
 pub mod diode;
 pub mod linalg;
+pub mod mixed;
+pub mod opamp;
 pub mod transistor;
 pub mod waveform;
 
-pub use analysis::{OpResult, SimOptions, Simulator, Stats, TranOptions, TranResult};
+pub use analysis::{OpResult, SimOptions, Simulator, Stats, StepCheck, TranOptions, TranResult, TranState};
 pub use circuit::{Circuit, Element, ElementKind, NodeId, SimError, GND};
 pub use diode::DiodeModel;
+pub use mixed::{DriveSrc, DriverLink, Level, MixedSim, MixedSpec, ObsKind, Observer, PowerGroup, PowerState};
+pub use opamp::OpAmpModel;
 pub use transistor::{BjtModel, MosModel, MosRegion};
 pub use waveform::Waveform;
 

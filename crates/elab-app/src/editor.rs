@@ -3,12 +3,12 @@
 use crate::symbols::{self, Live, Pen};
 use crate::theme::*;
 use egui::{Align2, Color32, CursorIcon, FontId, Key, Modifiers, PointerButton, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
-use elab_app::model::{rot_f, Document, History, PartKind, Shape, P};
+use elab_app::model::{rot_f, Document, History, IcPin, PartKind, Shape, P};
 use elab_app::netlist::Netlist;
 use elab_app::sim::OpView;
 use elab_sim::digital::Logic;
 use elab_sim::fmt_si;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Pixel pro Rastereinheit bei Zoom 1.
 pub const GRID: f32 = 20.0;
@@ -95,6 +95,8 @@ pub struct LiveData<'a> {
     pub op: Option<&'a OpView>,
     /// Logikpegel je Netz aus der Digitalsimulation
     pub logic: Option<&'a [Logic]>,
+    /// Gemischte Schaltung: Pegel an den Anschlüssen von ICs und gekoppelten Logikbausteinen
+    pub pin_logic: Option<&'a HashMap<u32, Vec<Option<Logic>>>>,
     /// Gedrückte Taster
     pub pressed: &'a HashSet<u32>,
 }
@@ -103,7 +105,12 @@ impl LiveData<'_> {
     /// Logikpegel eines Netzes, falls es digital betrieben wird.
     fn logic_of(&self, net: usize) -> Option<Logic> {
         let nl = self.nl?;
-        if nl.digital.as_ref()?.is_digital_net.get(net).copied()? {
+        let is_dig = match (&nl.digital, &nl.mixed) {
+            (Some(d), _) => d.is_digital_net.get(net).copied()?,
+            (_, Some(m)) => m.digital_net.get(net).copied()?,
+            _ => false,
+        };
+        if is_dig {
             self.logic?.get(net).copied()
         } else {
             None
@@ -689,7 +696,11 @@ impl Editor {
 
         // Knotenpunkte und offene Enden
         let mut pts: Vec<P> = doc.wires.iter().flat_map(|w| [w.a, w.b]).collect();
-        pts.extend(doc.parts.iter().filter(|p| !matches!(p.kind, PartKind::Probe)).flat_map(|p| p.pins()));
+        pts.extend(doc.parts.iter().filter(|p| !matches!(p.kind, PartKind::Probe)).flat_map(|p| {
+            // Ausgänge und Steueranschlüsse von ICs dürfen offen bleiben
+            let roles = p.kind.ic_pins();
+            p.pins().into_iter().enumerate().filter(move |(k, _)| !matches!(roles.get(*k), Some(IcPin::Out | IcPin::Analog))).map(|(_, q)| q)
+        }));
         pts.sort();
         pts.dedup();
         for p in pts {
@@ -749,10 +760,12 @@ impl Editor {
                 painter.rect_filled(rr, 4.0, ACCENT.gamma_multiply(0.08));
             }
             let pen = Pen { painter, origin, s, rot: part.rot, color, width: pw };
-            let pins: Vec<Logic> = if part.kind.is_digital() {
+            let pins: Vec<Option<Logic>> = if let Some(pl) = live.pin_logic.and_then(|m| m.get(&part.id)) {
+                pl.clone()
+            } else if part.kind.is_digital() {
                 live.nl
                     .and_then(|nl| nl.pin_nets.get(&part.id))
-                    .map(|pn| pn.iter().map(|&n| live.logic_of(n).unwrap_or(Logic::Z)).collect())
+                    .map(|pn| pn.iter().map(|&n| Some(live.logic_of(n).unwrap_or(Logic::Z))).collect())
                     .filter(|_| live.logic.is_some())
                     .unwrap_or_default()
             } else {
@@ -764,7 +777,20 @@ impl Editor {
                 continue;
             }
             if s >= 9.0 && !matches!(part.kind, PartKind::Ground | PartKind::LogicHigh) {
-                if part.kind.is_digital() {
+                if part.kind.is_ic() {
+                    // Name (und Typ) oben rechts am Gehäuse
+                    let (lx, ly, with_type) = match part.kind.ic_sides() {
+                        Some(sides) => {
+                            let (_, y0, x1, _) = sides.body();
+                            (x1 + 0.15, y0 - 0.1, false)
+                        }
+                        None if matches!(part.kind, PartKind::OpAmp { .. }) => (0.5, -1.25, true),
+                        None => (0.4, if part.local_pins_len() == 4 { -1.6 } else { -2.1 }, true),
+                    };
+                    let (dx, dy) = rot_f(lx, ly, part.rot);
+                    let t = if with_type { format!("{} · {}", part.name, part.kind.value_text()) } else { part.name.clone() };
+                    painter.text(origin + Vec2::new(dx, dy) * s, Align2::LEFT_BOTTOM, t, font.clone(), Color32::from_rgb(228, 230, 236));
+                } else if part.kind.is_digital() {
                     let (x0, y0, x1, _) = part.bbox();
                     let at = self.to_screen(r, (x0 + x1) * 0.5, y0) - Vec2::new(0.0, 2.0);
                     let v = part.kind.value_text();
@@ -1012,6 +1038,26 @@ impl Editor {
                     lines.push((format!("U_AB = {}   U_SB = {}", fmt_si(v.u, "V"), fmt_si(v.ctrl_u, "V")), ACCENT, false));
                     lines.push((format!("I_A = {}   I_Schleifer = {}", fmt_si(v.i, "A"), fmt_si(v.ctrl_i, "A")), BLUE, false));
                     lines.push(("Wenn ausgewählt: ← / → verstellt den Schleifer".into(), MUTED, false));
+                } else if let (Some(v), PartKind::OpAmp { .. }) = (live.op.and_then(|o| o.parts.get(&id)), &part.kind) {
+                    lines.push((format!("U_aus = {}   U₊ − U₋ = {}", fmt_si(v.u, "V"), fmt_si(v.ctrl_u, "V")), ACCENT, false));
+                    lines.push((format!("I_aus = {}", fmt_si(v.i, "A")), BLUE, false));
+                    let state = if v.ctrl_u.abs() < 1e-3 { "regelt: U₊ ≈ U₋ (Gegenkopplung)" } else { "übersteuert: Ausgang an der Grenze" };
+                    lines.push((state.into(), Color32::WHITE, false));
+                } else if let (Some(v), true) = (live.op.and_then(|o| o.parts.get(&id)), part.kind.is_ic()) {
+                    lines.push((format!("U_VCC = {}   I_VCC = {}", fmt_si(v.u, "V"), fmt_si(v.i, "A")), ACCENT, false));
+                    lines.push((format!("P = {} (Verlustleistung)", fmt_si(v.p, "W")), GREEN, false));
+                    if let Some(pins) = live.pin_logic.and_then(|m| m.get(&id)) {
+                        let names = part.kind.pin_names();
+                        let vals: Vec<String> = pins
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(k, v)| v.map(|v| format!("{} = {}", names.get(k).unwrap_or(&"?"), v.symbol())))
+                            .collect();
+                        lines.push((vals.join("  ·  "), symbols::logic_color(Logic::L1), false));
+                        if pins.iter().flatten().any(|v| *v == Logic::X) {
+                            lines.push(("X: Spannung zwischen den Schwellen oder Eingang offen".into(), symbols::logic_color(Logic::X), false));
+                        }
+                    }
                 } else if let (Some(v), PartKind::Voltmeter) = (live.op.and_then(|o| o.parts.get(&id)), &part.kind) {
                     lines.push((format!("U = {} (+ gegen −)", fmt_si(v.u, "V")), ACCENT, false));
                     lines.push(("Misst parallel, belastet die Schaltung nicht".into(), MUTED, false));

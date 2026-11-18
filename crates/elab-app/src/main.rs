@@ -1,6 +1,7 @@
 //! elab – Elektronik-Lernlabor: Schaltungen bauen und live simulieren.
 
 mod editor;
+mod mixed;
 mod panels;
 mod script;
 mod symbols;
@@ -20,6 +21,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use theme::*;
 use tutorial::Topic;
+
+/// Reiter der Bauteilpalette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PalTab {
+    Analog,
+    Digital,
+    Ic,
+}
+
+impl PalTab {
+    fn groups(self) -> Vec<(&'static str, Vec<PartKind>)> {
+        match self {
+            PalTab::Analog => PartKind::palette_analog(),
+            PalTab::Digital => PartKind::palette_digital(),
+            PalTab::Ic => PartKind::palette_ic(),
+        }
+    }
+}
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
@@ -118,7 +137,19 @@ struct App {
     an_window: f64,
     truth: Option<Result<sim::TruthTable, String>>,
     bottom_tab: panels::BottomTab,
-    palette_digital: bool,
+    palette: PalTab,
+    // Gemischte Schaltungen (Echtzeit)
+    msim: Option<elab_sim::MixedSim>,
+    msim_key: Option<Document>,
+    /// Zählt Neuaufbauten der Netzliste; `msim_gen` = zuletzt übernommener Stand
+    nl_gen: u64,
+    msim_gen: u64,
+    /// Logikpegel je Netz (rein digitale Netze einer gemischten Schaltung)
+    mixed_logic: Vec<elab_sim::digital::Logic>,
+    /// Pegel an den Anschlüssen von ICs und gekoppelten Logikbausteinen
+    pin_logic: HashMap<u32, Vec<Option<elab_sim::digital::Logic>>>,
+    /// Simulation kommt nicht hinterher
+    msim_lag: bool,
     /// Vom Testskript gedrückter Taster
     script_pressed: Option<u32>,
     /// Palettenkacheln des letzten Bildes (für Testskripte)
@@ -163,7 +194,14 @@ impl App {
             an_window: 10.0,
             truth: None,
             bottom_tab: panels::BottomTab::Scope,
-            palette_digital: false,
+            palette: PalTab::Analog,
+            msim: None,
+            msim_key: None,
+            nl_gen: 0,
+            msim_gen: 0,
+            mixed_logic: Vec::new(),
+            pin_logic: HashMap::new(),
+            msim_lag: false,
             script_pressed: None,
             tile_rects: Vec::new(),
             autosaved: None,
@@ -194,11 +232,18 @@ impl App {
                 .parts
                 .iter()
                 .any(|p| matches!(p.kind, PartKind::Clock { .. } | PartKind::DFlipFlop | PartKind::JkFlipFlop | PartKind::Counter4));
+            let has_ic = ex.doc_has_ic();
             self.replace_doc(ex.doc);
             self.saved = self.doc.clone();
             self.file = None;
             self.scope_t = ex.scope_t;
-            self.palette_digital = ex.digital;
+            self.palette = if has_ic {
+                PalTab::Ic
+            } else if ex.digital {
+                PalTab::Digital
+            } else {
+                PalTab::Analog
+            };
             self.bottom_tab = if ex.digital {
                 if sequential {
                     panels::BottomTab::Analyzer
@@ -345,7 +390,18 @@ impl App {
         let key_ok = self.sim_key.as_ref().is_some_and(|(d, on, p)| *d == self.doc && *on == self.sim_on && *p == pressed);
         if !key_ok {
             let nl = netlist::build_with(&self.doc, &self.pressed);
-            self.op = if self.sim_on { sim::operating_point(&nl) } else { Err(String::new()) };
+            self.nl_gen += 1;
+            self.op = if !self.sim_on {
+                Err(String::new())
+            } else if nl.mixed.is_some() {
+                // läuft in Echtzeit (update_mixed)
+                match &nl.error {
+                    Some(e) => Err(e.clone()),
+                    None => self.op.clone().or(Err(String::new())),
+                }
+            } else {
+                sim::operating_point(&nl)
+            };
             self.nl = Some(nl);
             self.sim_key = Some((self.doc.clone(), self.sim_on, pressed));
         }
@@ -443,6 +499,7 @@ impl App {
                 Ok(_) if self.nl.as_ref().is_some_and(|nl| nl.simulated.is_empty() && nl.excluded.is_empty() && nl.digital.is_some()) => {
                     ui.label(RichText::new("✔ Digitalschaltung").color(GREEN).strong());
                 }
+                Ok(_) if self.msim.is_some() => self.mixed_status(ui),
                 Ok(op) => {
                     let nl = self.nl.as_ref().unwrap();
                     let n_nets = nl.nets.iter().filter(|n| n.reachable && !n.is_gnd).count();
@@ -522,15 +579,18 @@ impl App {
         });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui.selectable_label(!self.palette_digital, RichText::new("Analog").size(14.0).strong()).clicked() {
-                self.palette_digital = false;
-            }
-            if ui.selectable_label(self.palette_digital, RichText::new("Digital").size(14.0).strong()).clicked() {
-                self.palette_digital = true;
-                self.topic = Topic::Logic;
+            for (tab, label) in [(PalTab::Analog, "Analog"), (PalTab::Digital, "Digital"), (PalTab::Ic, "ICs")] {
+                if ui.selectable_label(self.palette == tab, RichText::new(label).size(14.0).strong()).clicked() {
+                    self.palette = tab;
+                    match tab {
+                        PalTab::Digital => self.topic = Topic::Logic,
+                        PalTab::Ic => self.topic = Topic::RealIc,
+                        PalTab::Analog => {}
+                    }
+                }
             }
         });
-        let groups = if self.palette_digital { PartKind::palette_digital() } else { PartKind::palette_analog() };
+        let groups = self.palette.groups();
         self.tile_rects.clear();
         for (cat, kinds) in groups {
             ui.label(RichText::new(cat).small().color(MUTED));
@@ -831,6 +891,55 @@ impl App {
                 }
                 ui.label(RichText::new("Anteil zwischen Schleifer S und B. Pfeiltasten verstellen ebenfalls.").small().color(MUTED));
             }
+            PartKind::GateIc { gate, family } => {
+                let mut g = gate;
+                ui.horizontal(|ui| {
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Funktion").color(MUTED)));
+                    egui::ComboBox::from_id_salt(("gti", id)).selected_text(g.label()).show_ui(ui, |ui| {
+                        for t in elab_app::model::GateType::ALL
+                            .into_iter()
+                            .filter(|t| t.inputs() == gate.inputs() && *t != elab_app::model::GateType::Xnor)
+                        {
+                            ui.selectable_value(&mut g, t, t.label());
+                        }
+                    });
+                });
+                if g != gate {
+                    new_kind = Some(PartKind::GateIc { gate: g, family });
+                }
+                if let Some(k) = self.family_combo(ui, id, &part.kind) {
+                    new_kind = Some(k);
+                }
+            }
+            PartKind::SchmittIc { .. } | PartKind::DffIc { .. } | PartKind::CounterIc { .. } => {
+                if let Some(k) = self.family_combo(ui, id, &part.kind) {
+                    new_kind = Some(k);
+                }
+            }
+            PartKind::OpAmp { kind } => {
+                let mut k = kind;
+                ui.horizontal(|ui| {
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Typ").color(MUTED)));
+                    egui::ComboBox::from_id_salt(("oa", id)).selected_text(k.label()).show_ui(ui, |ui| {
+                        for t in elab_app::model::OpAmpType::ALL {
+                            ui.selectable_value(&mut k, t, t.label());
+                        }
+                    });
+                });
+                if k != kind {
+                    new_kind = Some(PartKind::OpAmp { kind: k });
+                }
+                ui.label(RichText::new(k.describe()).small().color(MUTED));
+            }
+            PartKind::Timer555 => {
+                ui.label(RichText::new("Bipolarer Timer, 4,5 … 16 V. Ausgang 1 ≈ VCC − 1,7 V.").small().color(MUTED));
+            }
+            PartKind::Adc4 => {
+                ui.label(RichText::new("Code = ⌊16 · U_IN / U_REF⌋, Ausgänge wie 74HC.").small().color(MUTED));
+            }
+            PartKind::Dac4 => {
+                ui.label(RichText::new("U_OUT = U_REF · Code / 16, Innenwiderstand 10 kΩ (R-2R).").small().color(MUTED));
+            }
             PartKind::Ground
             | PartKind::Probe
             | PartKind::PushButton
@@ -868,6 +977,10 @@ impl App {
                     }
                 });
             }
+        }
+        // Echte Bausteine: Versorgung und Pegel, die der Baustein an seinen Anschlüssen sieht
+        if part.kind.is_ic() {
+            self.ic_panel(ui, &part);
         }
         if let Some(k) = new_kind {
             self.hist.checkpoint(&self.doc);
@@ -917,6 +1030,16 @@ impl App {
                     if let Some(reg) = v.region {
                         ui.label(RichText::new(reg.text(bjt)).strong());
                     }
+                } else if let (Some(v), PartKind::OpAmp { .. }) = (vals, &part.kind) {
+                    big_value(ui, "U_aus", &fmt_si(v.u, "V"), ACCENT);
+                    big_value(ui, "U₊ − U₋", &fmt_si(v.ctrl_u, "V"), ACCENT);
+                    big_value(ui, "I_aus", &fmt_si(v.i, "A"), BLUE);
+                    big_value(ui, "I (V+)", &fmt_si(v.ctrl_i, "A"), BLUE);
+                    big_value(ui, "P", &fmt_si(v.p, "W"), GREEN);
+                } else if let (Some(v), true) = (vals, part.kind.is_ic()) {
+                    big_value(ui, "U_VCC", &fmt_si(v.u, "V"), ACCENT);
+                    big_value(ui, "I_VCC", &fmt_si(v.i, "A"), BLUE);
+                    big_value(ui, "P (Verlust)", &fmt_si(v.p, "W"), GREEN);
                 } else if let (Some(v), PartKind::Voltmeter) = (vals, &part.kind) {
                     big_value(ui, "Anzeige", &fmt_si(v.u, "V"), ACCENT);
                 } else if let (Some(v), PartKind::Ammeter) = (vals, &part.kind) {
@@ -959,6 +1082,80 @@ impl App {
         } else if self.nl.as_ref().is_some_and(|nl| nl.excluded.contains(&id)) {
             ui.label(RichText::new("Nicht mit der Masse verbunden: wird nicht simuliert.").color(ACCENT));
         }
+    }
+
+    /// Auswahl der Logikfamilie (HC/HCT).
+    fn family_combo(&mut self, ui: &mut egui::Ui, id: u32, kind: &PartKind) -> Option<PartKind> {
+        let fam = kind.family()?;
+        let mut f = fam;
+        ui.horizontal(|ui| {
+            ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Familie").color(MUTED)));
+            egui::ComboBox::from_id_salt(("fam", id)).selected_text(f.label()).show_ui(ui, |ui| {
+                for t in elab_app::model::LogicFamily::ALL {
+                    ui.selectable_value(&mut f, t, t.label());
+                }
+            });
+        });
+        ui.label(RichText::new(f.describe()).small().color(MUTED));
+        (f != fam).then(|| {
+            let mut k = kind.clone();
+            k.set_family(f);
+            k
+        })
+    }
+
+    /// Versorgungszustand und Pegel an den Anschlüssen eines ICs.
+    fn ic_panel(&mut self, ui: &mut egui::Ui, part: &elab_app::model::Part) {
+        use elab_sim::PowerState;
+        let pins = self.pin_logic.get(&part.id).cloned();
+        let power = self.ic_power(part.id);
+        if pins.is_none() && power.is_none() {
+            return;
+        }
+        ui.add_space(4.0);
+        egui::Frame::group(ui.style()).inner_margin(8.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("Was der Baustein sieht").strong().color(BLUE));
+            match power {
+                Some(PowerState::Ok) => {
+                    ui.label(RichText::new("✔ Versorgung in Ordnung").color(GREEN));
+                }
+                Some(PowerState::Low) => {
+                    ui.label(RichText::new("⚠ Versorgung fehlt oder zu klein: Ausgänge abgeschaltet").color(ACCENT));
+                }
+                Some(PowerState::Overvoltage) => {
+                    ui.label(RichText::new("✖ Überspannung: Der Baustein ist zerstört. Nach dem Korrigieren neu einschalten (↺).").color(RED));
+                }
+                Some(PowerState::Reversed) => {
+                    ui.label(RichText::new("✖ VCC und GND vertauscht: Der Baustein ist zerstört.").color(RED));
+                }
+                None => {}
+            }
+            if let Some(pins) = pins {
+                let names = part.kind.pin_names();
+                ui.horizontal_wrapped(|ui| {
+                    for (k, v) in pins.iter().enumerate() {
+                        let Some(v) = v else { continue };
+                        ui.label(
+                            RichText::new(format!("{} = {}", names.get(k).unwrap_or(&"?"), v.symbol()))
+                                .size(15.0)
+                                .strong()
+                                .color(symbols::logic_color(*v)),
+                        );
+                        ui.add_space(6.0);
+                    }
+                });
+                if pins.iter().flatten().any(|v| *v == elab_sim::digital::Logic::X) {
+                    ui.label(
+                        RichText::new(
+                            "X: Spannung zwischen den Schaltschwellen oder Eingang offen. Offene CMOS-Eingänge brauchen einen Pull-up/-down.",
+                        )
+                        .small()
+                        .color(MUTED),
+                    );
+                }
+            }
+        });
     }
 
     fn probe_voltage(&self, id: u32) -> Option<f64> {
@@ -1036,6 +1233,15 @@ impl App {
         ui.label(RichText::new("Transistoren & Messen").strong().color(MUTED));
         ui.horizontal_wrapped(|ui| {
             for t in Topic::TRANSISTORS {
+                if ui.selectable_label(self.topic == t, tutorial::doc(t).title).clicked() {
+                    self.topic = t;
+                }
+            }
+        });
+        ui.add_space(6.0);
+        ui.label(RichText::new("Echte Bausteine (ICs)").strong().color(MUTED));
+        ui.horizontal_wrapped(|ui| {
+            for t in Topic::MIXED {
                 if ui.selectable_label(self.topic == t, tutorial::doc(t).title).clicked() {
                     self.topic = t;
                 }
@@ -1180,11 +1386,15 @@ impl App {
             }
             ClickPx(x, y) => self.script.as_mut().unwrap().click(egui::pos2(x, y), Modifiers::NONE),
             PalDrag(label, gx, gy) => {
-                let digital = PartKind::palette_digital().iter().flat_map(|g| g.1.iter()).any(|k| k.label() == label)
-                    && !PartKind::palette_analog().iter().flat_map(|g| g.1.iter()).any(|k| k.label() == label);
-                if digital != self.palette_digital {
+                let has = |t: PalTab| t.groups().iter().flat_map(|g| g.1.iter()).any(|k| k.label() == label);
+                let tab = if has(self.palette) {
+                    self.palette
+                } else {
+                    [PalTab::Analog, PalTab::Digital, PalTab::Ic].into_iter().find(|&t| has(t)).unwrap_or(self.palette)
+                };
+                if tab != self.palette {
                     // Erst den Palettenreiter wechseln, dann im nächsten Schritt ziehen
-                    self.palette_digital = digital;
+                    self.palette = tab;
                     let run = self.script.as_mut().unwrap();
                     run.cmds.push_front(PalDrag(label, gx, gy));
                     run.wait = 2;
@@ -1303,7 +1513,13 @@ impl App {
                     _ => panels::BottomTab::Scope,
                 };
             }
-            Palette(digital) => self.palette_digital = digital,
+            Palette(tab) => {
+                self.palette = match tab {
+                    1 => PalTab::Digital,
+                    2 => PalTab::Ic,
+                    _ => PalTab::Analog,
+                }
+            }
             Pause(on) => self.dig_paused = on,
             Quit => std::process::exit(0),
         }
@@ -1333,7 +1549,7 @@ fn tile(ui: &mut egui::Ui, kind: &PartKind, selected: bool) -> egui::Response {
             let (x0, y0, x1, y1) = kind.local_bbox();
             (0, 12.0, -Vec2::new((x0 + x1) * 0.5, (y0 + y1) * 0.5) * 12.0)
         }
-        Shape::Logic => {
+        Shape::Logic | Shape::Ic => {
             let (x0, y0, x1, y1) = kind.local_bbox();
             let s = (62.0 / (x1 - x0)).min(36.0 / (y1 - y0)).min(13.0);
             (0, s, -Vec2::new((x0 + x1) * 0.5, (y0 + y1) * 0.5) * s)
@@ -1373,6 +1589,13 @@ fn tile(ui: &mut egui::Ui, kind: &PartKind, selected: bool) -> egui::Response {
         PartKind::JkFlipFlop => "JK-FF",
         PartKind::Counter4 => "Zähler",
         PartKind::SevenSeg => "7-Segment",
+        PartKind::Adc4 => "ADC",
+        PartKind::Dac4 => "DAC",
+        other if other.is_ic() => {
+            let t = other.ic_type().unwrap_or_default();
+            painter.text(rect.center_bottom() - Vec2::new(0.0, 5.0), egui::Align2::CENTER_BOTTOM, t, egui::FontId::proportional(11.0), MUTED);
+            return resp;
+        }
         other => other.label(),
     };
     painter.text(rect.center_bottom() - Vec2::new(0.0, 5.0), egui::Align2::CENTER_BOTTOM, short, egui::FontId::proportional(11.0), MUTED);
@@ -1407,6 +1630,7 @@ impl eframe::App for App {
         self.global_keys(&ctx);
         self.update_sim();
         self.update_digital(&ctx);
+        self.update_mixed(&ctx);
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
         egui::Panel::left("left").resizable(true).default_size(330.0).min_size(300.0).show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
@@ -1424,8 +1648,14 @@ impl eframe::App for App {
             egui::Panel::bottom("scope").resizable(true).default_size(270.0).min_size(150.0).show(ui, |ui| self.bottom_ui(ui));
         }
         egui::CentralPanel::no_frame().show(ui, |ui| {
-            let live =
-                LiveData { nl: self.nl.as_ref(), op: self.op.as_ref().ok(), logic: self.dsim.as_ref().map(|d| d.nets()), pressed: &self.pressed };
+            let mixed = self.msim.is_some();
+            let live = LiveData {
+                nl: self.nl.as_ref(),
+                op: self.op.as_ref().ok(),
+                logic: if mixed { Some(&self.mixed_logic[..]) } else { self.dsim.as_ref().map(|d| d.nets()) },
+                pin_logic: mixed.then_some(&self.pin_logic),
+                pressed: &self.pressed,
+            };
             let out = self.ed.ui(ui, &mut self.doc, &mut self.hist, &live);
             if let Some(k) = out.focus {
                 self.topic = Topic::of(&k);
