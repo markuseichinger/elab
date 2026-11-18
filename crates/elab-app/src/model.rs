@@ -631,37 +631,67 @@ const fn p(x: i32, y: i32) -> P {
 
 impl PartKind {
     /// Bauteile der Palette mit Standardwerten: (Bereich, Gruppe, Bauteile).
+    /// Bauteilpalette: Gruppen in Anzeigereihenfolge, jedes Bauteil genau einmal.
     pub fn palette() -> Vec<(&'static str, Vec<PartKind>)> {
-        let mut v = Self::palette_analog();
-        v.extend(Self::palette_digital());
-        v.extend(Self::palette_ic());
-        v
-    }
-
-    pub fn palette_ic() -> Vec<(&'static str, Vec<PartKind>)> {
         let f = LogicFamily::Hc;
         vec![
             (
-                "Logik-ICs (74HC)",
+                "Quellen & Masse",
+                vec![
+                    PartKind::DcVoltage { v: 9.0 },
+                    // 5 V für Logik-ICs (74HC verträgt höchstens 7 V)
+                    PartKind::DcVoltage { v: 5.0 },
+                    PartKind::AcVoltage { amp: 10.0, freq: 50.0, offset: 0.0 },
+                    PartKind::SquareVoltage { low: 0.0, high: 5.0, freq: 1000.0 },
+                    PartKind::CurrentSource { i: 0.01 },
+                    PartKind::Ground,
+                ],
+            ),
+            (
+                "Passiv",
+                vec![
+                    PartKind::Resistor { r: 1000.0 },
+                    PartKind::Potentiometer { r: 10e3, pos: 0.5 },
+                    PartKind::Capacitor { c: 100e-9 },
+                    PartKind::Inductor { l: 1e-3 },
+                    PartKind::Lamp { v_nom: 12.0, p_nom: 5.0 },
+                ],
+            ),
+            (
+                "Halbleiter",
+                vec![
+                    PartKind::Diode { kind: DiodeType::Si1N4148 },
+                    PartKind::Led { color: LedColor::Rot },
+                    PartKind::Transistor { kind: TransistorType::Bc547 },
+                    PartKind::Transistor { kind: TransistorType::Bc557 },
+                    PartKind::Transistor { kind: TransistorType::N2n7000 },
+                    PartKind::Transistor { kind: TransistorType::Bs250 },
+                ],
+            ),
+            ("Schalter", vec![PartKind::Switch { closed: false }, PartKind::PushButton]),
+            ("Messen", vec![PartKind::Probe, PartKind::Voltmeter, PartKind::Ammeter]),
+            ("Logikgatter (ideal)", GateType::ALL.iter().map(|&g| PartKind::Gate { gate: g }).collect()),
+            (
+                "Logik: Ein- und Ausgänge",
+                vec![
+                    PartKind::LogicInput { on: false },
+                    PartKind::Button,
+                    PartKind::Clock { freq: 1.0 },
+                    PartKind::LogicHigh,
+                    PartKind::LogicLed { color: LedColor::Rot },
+                    PartKind::SevenSeg,
+                ],
+            ),
+            ("Logik: Speicher & Zähler", vec![PartKind::DFlipFlop, PartKind::JkFlipFlop, PartKind::Counter4]),
+            (
+                "Logik-ICs (74HC, mit Versorgung)",
                 [GateType::Nand, GateType::Nor, GateType::And, GateType::Or, GateType::Xor, GateType::Not]
                     .iter()
                     .map(|&g| PartKind::GateIc { gate: g, family: f })
-                    .chain([PartKind::SchmittIc { family: f }])
+                    .chain([PartKind::SchmittIc { family: f }, PartKind::DffIc { family: f }, PartKind::CounterIc { family: f }])
                     .collect(),
             ),
-            ("Speicher & Zähler", vec![PartKind::DffIc { family: f }, PartKind::CounterIc { family: f }]),
-            ("Analog & Wandler", vec![PartKind::OpAmp { kind: OpAmpType::Lm358 }, PartKind::Timer555, PartKind::Adc4, PartKind::Dac4]),
-            (
-                "Versorgung & Anzeige",
-                vec![
-                    PartKind::DcVoltage { v: 5.0 },
-                    PartKind::Ground,
-                    PartKind::Resistor { r: 1000.0 },
-                    PartKind::Capacitor { c: 1e-6 },
-                    PartKind::Led { color: LedColor::Rot },
-                    PartKind::PushButton,
-                ],
-            ),
+            ("Timer, OpAmp & Wandler", vec![PartKind::Timer555, PartKind::OpAmp { kind: OpAmpType::Lm358 }, PartKind::Adc4, PartKind::Dac4]),
         ]
     }
 
@@ -762,55 +792,6 @@ impl PartKind {
             Dac4 => vec![In, In, In, In, Out, Supply, Analog, Supply],
             _ => Vec::new(),
         }
-    }
-
-    pub fn palette_analog() -> Vec<(&'static str, Vec<PartKind>)> {
-        vec![
-            (
-                "Quellen",
-                vec![
-                    PartKind::DcVoltage { v: 9.0 },
-                    PartKind::AcVoltage { amp: 10.0, freq: 50.0, offset: 0.0 },
-                    PartKind::SquareVoltage { low: 0.0, high: 5.0, freq: 1000.0 },
-                    PartKind::CurrentSource { i: 0.01 },
-                ],
-            ),
-            (
-                "Passiv",
-                vec![
-                    PartKind::Resistor { r: 1000.0 },
-                    PartKind::Potentiometer { r: 10e3, pos: 0.5 },
-                    PartKind::Capacitor { c: 100e-9 },
-                    PartKind::Inductor { l: 1e-3 },
-                    PartKind::Lamp { v_nom: 12.0, p_nom: 5.0 },
-                ],
-            ),
-            (
-                "Halbleiter",
-                vec![
-                    PartKind::Diode { kind: DiodeType::Si1N4148 },
-                    PartKind::Led { color: LedColor::Rot },
-                    PartKind::Transistor { kind: TransistorType::Bc547 },
-                    PartKind::Transistor { kind: TransistorType::Bc557 },
-                    PartKind::Transistor { kind: TransistorType::N2n7000 },
-                    PartKind::Transistor { kind: TransistorType::Bs250 },
-                ],
-            ),
-            ("Schalten", vec![PartKind::Switch { closed: false }, PartKind::PushButton]),
-            ("Messen", vec![PartKind::Ground, PartKind::Probe, PartKind::Voltmeter, PartKind::Ammeter]),
-        ]
-    }
-
-    pub fn palette_digital() -> Vec<(&'static str, Vec<PartKind>)> {
-        vec![
-            ("Gatter", GateType::ALL.iter().map(|&g| PartKind::Gate { gate: g }).collect()),
-            (
-                "Eingänge",
-                vec![PartKind::LogicInput { on: false }, PartKind::Button, PartKind::Clock { freq: 1.0 }, PartKind::LogicHigh, PartKind::Ground],
-            ),
-            ("Ausgänge", vec![PartKind::LogicLed { color: LedColor::Rot }, PartKind::SevenSeg, PartKind::Probe]),
-            ("Speicher & Zähler", vec![PartKind::DFlipFlop, PartKind::JkFlipFlop, PartKind::Counter4]),
-        ]
     }
 
     pub fn shape(&self) -> Shape {
@@ -1114,6 +1095,38 @@ impl PartKind {
     }
 }
 
+/// Kopierter Ausschnitt eines Schaltplans (Zwischenablage).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Clip {
+    pub parts: Vec<Part>,
+    pub wires: Vec<(P, P)>,
+}
+
+impl Clip {
+    /// Kennung vor dem JSON in der Zwischenablage
+    pub const TAG: &'static str = "elab-ausschnitt:";
+
+    pub fn is_empty(&self) -> bool {
+        self.parts.is_empty() && self.wires.is_empty()
+    }
+
+    /// Mitte des Ausschnitts (Rasterpunkt)
+    pub fn center(&self) -> Option<P> {
+        let pts: Vec<P> = self.parts.iter().map(|p| p.pos).chain(self.wires.iter().flat_map(|w| [w.0, w.1])).collect();
+        let (x0, x1) = (pts.iter().map(|p| p.x).min()?, pts.iter().map(|p| p.x).max()?);
+        let (y0, y1) = (pts.iter().map(|p| p.y).min()?, pts.iter().map(|p| p.y).max()?);
+        Some(P::new((x0 + x1) / 2, (y0 + y1) / 2))
+    }
+
+    pub fn to_text(&self) -> String {
+        format!("{}{}", Self::TAG, serde_json::to_string(self).unwrap_or_default())
+    }
+
+    pub fn from_text(s: &str) -> Option<Self> {
+        serde_json::from_str(s.trim().strip_prefix(Self::TAG)?).ok()
+    }
+}
+
 /// Ein platziertes Bauteil.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Part {
@@ -1293,6 +1306,31 @@ impl Document {
     }
 
     /// Entfernt Bauteile und Drähte.
+    /// Ausschnitt zum Kopieren: die gewählten Bauteile und Drähte.
+    pub fn copy(&self, parts: &HashSet<u32>, wires: &HashSet<u32>) -> Clip {
+        Clip {
+            parts: self.parts.iter().filter(|p| parts.contains(&p.id)).cloned().collect(),
+            wires: self.wires.iter().filter(|w| wires.contains(&w.id)).map(|w| (w.a, w.b)).collect(),
+        }
+    }
+
+    /// Fügt einen Ausschnitt um `off` verschoben ein. Bauteile bekommen neue Namen.
+    /// Ergebnis: IDs der neuen Bauteile und Drähte.
+    pub fn paste(&mut self, clip: &Clip, off: P) -> (HashSet<u32>, HashSet<u32>) {
+        let mut parts = HashSet::new();
+        for p in &clip.parts {
+            let id = self.add_part(p.kind.clone(), p.pos + off, p.rot);
+            parts.insert(id);
+        }
+        let segs: Vec<Wire> = clip.wires.iter().map(|&(a, b)| Wire { id: 0, a: a + off, b: b + off }).collect();
+        for w in &segs {
+            self.add_wire(w.a, w.b);
+        }
+        self.normalize();
+        let wires = self.wires.iter().filter(|w| segs.iter().any(|s| s.contains(w.a) && s.contains(w.b))).map(|w| w.id).collect();
+        (parts, wires)
+    }
+
     pub fn remove(&mut self, parts: &HashSet<u32>, wires: &HashSet<u32>) {
         self.parts.retain(|p| !parts.contains(&p.id));
         self.wires.retain(|w| !wires.contains(&w.id));
@@ -1448,6 +1486,35 @@ impl Document {
         // Pins anderer Bauteile, die an derselben Stelle liegen, bleiben fest:
         // dort wird nicht mitgezogen, sonst würden fremde Verbindungen gerissen.
         let fixed: HashSet<P> = self.parts.iter().filter(|p| !ids.contains(&p.id)).flat_map(|p| p.pins()).collect();
+        // Verschobene Drähte nehmen ihre Verbindungen mit: Enden anderer Drähte, die auf
+        // ihnen liegen, ziehen mit (Gummiband). An festen Bauteilanschlüssen und mitten auf
+        // festen Leitungen entsteht ein neues Verbindungsstück.
+        let moved_old: Vec<Wire> = self.wires.iter().filter(|w| moved_wires.contains(&w.id)).cloned().collect();
+        let mut follow: HashMap<P, P> = HashMap::new();
+        let mut connectors: Vec<(P, P)> = Vec::new();
+        if wire_delta != P::default() && !moved_old.is_empty() {
+            let on_moved = |e: P| moved_old.iter().any(|m| m.contains(e));
+            let others: Vec<&Wire> = self.wires.iter().filter(|w| !moved_wires.contains(&w.id)).collect();
+            for w in &others {
+                for e in [w.a, w.b] {
+                    if on_moved(e) && !fixed.contains(&e) && !map.contains_key(&e) {
+                        follow.insert(e, e + wire_delta);
+                    }
+                }
+            }
+            for &pin in &fixed {
+                if on_moved(pin) {
+                    connectors.push((pin, pin + wire_delta));
+                }
+            }
+            for m in &moved_old {
+                for e in [m.a, m.b] {
+                    if others.iter().any(|w| w.contains(e) && w.a != e && w.b != e) && !fixed.contains(&e) {
+                        connectors.push((e, e + wire_delta));
+                    }
+                }
+            }
+        }
         for w in &mut self.wires {
             if moved_wires.contains(&w.id) {
                 w.a = w.a + wire_delta;
@@ -1459,8 +1526,16 @@ impl Document {
                     if !fixed.contains(end) {
                         *end = to;
                     }
+                } else if let Some(&to) = follow.get(end) {
+                    *end = to;
                 }
             }
+        }
+        connectors.sort();
+        connectors.dedup();
+        for (a, b) in connectors {
+            let id = self.new_id();
+            self.wires.push(Wire { id, a, b });
         }
         // Schräg gewordene Drähte als L verlegen, Knick möglichst nicht durch ein Bauteil
         let diagonals: Vec<usize> = (0..self.wires.len()).filter(|&k| !self.wires[k].is_orthogonal()).collect();

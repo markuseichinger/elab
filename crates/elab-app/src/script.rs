@@ -53,8 +53,6 @@ pub enum Cmd {
     Release,
     /// Reiter der unteren Leiste: scope, analyzer, truth
     Panel(String),
-    /// Palettenreiter: 0 analog, 1 digital, 2 ICs
-    Palette(u8),
     /// Digitalsimulation anhalten
     Pause(bool),
     /// Aktuellen Schaltplan als eigenes IC speichern
@@ -115,11 +113,8 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
             "hold" => Cmd::Hold(f(1)?, f(2)?),
             "release" => Cmd::Release,
             "panel" => Cmd::Panel(t.get(1).unwrap_or(&"scope").to_string()),
-            "palette" => Cmd::Palette(match t.get(1).copied() {
-                Some("digital") => 1,
-                Some("ic") | Some("ics") => 2,
-                _ => 0,
-            }),
+            // Früher Palettenreiter; paldrag klappt die Gruppe jetzt selbst auf
+            "palette" => Cmd::Wait(1),
             "pause" => Cmd::Pause(on(1)),
             "saveic" => Cmd::SaveIc(t.get(1).ok_or(format!("Zeile {}: Name fehlt", ln + 1))?.to_string()),
             "quit" => Cmd::Quit,
@@ -136,11 +131,13 @@ pub struct Runner {
     pub frames: VecDeque<Vec<Event>>,
     pub wait: u32,
     pub shot_pending: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Wiederholungen des aktuellen Befehls (z. B. Palette aufklappen)
+    pub retries: u32,
 }
 
 impl Runner {
     pub fn new(cmds: Vec<Cmd>) -> Self {
-        Self { cmds: cmds.into(), frames: VecDeque::new(), wait: 3, shot_pending: None }
+        Self { cmds: cmds.into(), frames: VecDeque::new(), wait: 3, shot_pending: None, retries: 0 }
     }
 
     pub fn busy(&self) -> bool {

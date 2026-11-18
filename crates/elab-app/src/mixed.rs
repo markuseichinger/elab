@@ -4,12 +4,12 @@
 
 use crate::theme::*;
 use crate::App;
-use egui::RichText;
+use egui::{Color32, RichText};
 use elab_app::model::{Document, PartKind};
 use elab_app::netlist::PinSrc;
 use elab_app::sim;
 use elab_sim::digital::Logic;
-use elab_sim::{fmt_si, MixedSim, PowerState};
+use elab_sim::{MixedSim, PowerState};
 use std::time::{Duration, Instant};
 
 /// Größter Zeitschritt der Echtzeitsimulation.
@@ -80,6 +80,7 @@ impl App {
             match ms.advance(target, Some(Instant::now() + Duration::from_millis(14))) {
                 Ok(done) => self.msim_lag = !done,
                 Err(e) => {
+                    crate::log::write(&format!("Echtzeitsimulation abgebrochen bei t = {}: {e}", ms.time()));
                     self.op = Err(e.to_string());
                     self.msim = None;
                     return;
@@ -87,6 +88,9 @@ impl App {
             }
             ctx.request_repaint();
         }
+        // Mitschrift für das Oszilloskop
+        let nodes = sim::probe_nodes(&self.doc, nl).into_iter().map(|p| p.2).collect();
+        ms.set_watch(nodes, 3.0 * self.scope_t);
         // Anzeige
         let mut v = sim::view(nl, &ms.snapshot());
         v.newton = ms.stats().newton_iterations;
@@ -117,21 +121,44 @@ impl App {
     pub(crate) fn mixed_status(&mut self, ui: &mut egui::Ui) {
         let Some(ms) = &self.msim else { return };
         let t = ms.time();
-        ui.label(RichText::new("✔ Echtzeitsimulation").color(GREEN).strong());
-        ui.label(RichText::new(format!("t = {}", fmt_si(t, "s"))).color(MUTED).monospace());
-        let label = if self.dig_paused { "▶ Weiter" } else { "⏸ Pause" };
-        if ui.small_button(label).clicked() {
-            self.dig_paused = !self.dig_paused;
-        }
-        ui.add(egui::Slider::new(&mut self.dig_speed, 0.001..=4.0).logarithmic(true).custom_formatter(|v, _| format!("{v:.3}×")))
-            .on_hover_text("Tempo: 1× ist Echtzeit. Kleiner: Zeitlupe, um schnelle Vorgänge zu sehen.");
-        let restart = ui.small_button("↺").on_hover_text("Neu einschalten (Kondensatoren leer, Flipflops auf 0)").clicked();
+        let now = ui.input(|i| i.time);
+        ui.label(RichText::new("✔ Echtzeit").color(GREEN).strong());
+        // Uhr und Bedienung in einem festen Kasten: nichts verrutscht, wenn die Zeit wächst
+        let mut restart = false;
+        egui::Frame::new().fill(Color32::from_rgb(24, 27, 34)).corner_radius(4.0).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let txt = if t < 1.0 { format!("t = {:>7.2} ms", t * 1e3) } else { format!("t = {:>7.3} s ", t) };
+                ui.add_sized([118.0, 18.0], egui::Label::new(RichText::new(txt).color(Color32::WHITE).monospace()));
+                let label = if self.dig_paused { "▶" } else { "⏸" };
+                let tip = if self.dig_paused { "Weiter" } else { "Anhalten" };
+                if ui.add_sized([24.0, 18.0], egui::Button::new(label).small()).on_hover_text(tip).clicked() {
+                    self.dig_paused = !self.dig_paused;
+                }
+                restart = ui
+                    .add_sized([24.0, 18.0], egui::Button::new("↺").small())
+                    .on_hover_text("Neu einschalten (Kondensatoren leer, Flipflops auf 0)")
+                    .clicked();
+                ui.label(RichText::new("Tempo").color(MUTED));
+                ui.add(egui::Slider::new(&mut self.dig_speed, 0.001..=4.0).logarithmic(true).show_value(false))
+                    .on_hover_text("Tempo: 1× ist Echtzeit. Kleiner: Zeitlupe, um schnelle Vorgänge zu sehen.");
+                ui.add_sized([52.0, 18.0], egui::Label::new(RichText::new(format!("{:.3}×", self.dig_speed)).monospace()));
+            });
+        });
+        // „Langsamer als Echtzeit“ nicht bei jedem einzelnen Bild an- und ausschalten
         if self.msim_lag && !self.dig_paused {
-            ui.label(RichText::new("· langsamer als Echtzeit").color(ACCENT));
+            self.lag_seen = now;
         }
+        let lag = now - self.lag_seen < 1.0;
+        ui.add_sized([150.0, 18.0], egui::Label::new(RichText::new(if lag { "kommt nicht hinterher" } else { "" }).color(ACCENT)))
+            .on_hover_text("Die Schaltung ist so aufwendig zu rechnen, dass die Simulation langsamer läuft als die Uhr.");
         // Zerstörte oder unversorgte Bausteine
         let (Some(nl), Some(ms)) = (&self.nl, &self.msim) else { return };
-        let Some(mx) = &nl.mixed else { return };
+        let Some(mx) = &nl.mixed else {
+            if restart {
+                self.msim = None;
+            }
+            return;
+        };
         let mut warn = Vec::new();
         for (&id, &g) in &mx.group_of {
             let name = self.doc.part(id).map(|p| p.name.clone()).unwrap_or_default();
@@ -142,9 +169,16 @@ impl App {
                 PowerState::Reversed => warn.push(format!("{name} verpolt und zerstört")),
             }
         }
-        warn.sort();
-        if !warn.is_empty() {
-            ui.label(RichText::new(format!("⚠ {}", warn.join(" · "))).color(RED));
+        // Warnungen bleiben kurz stehen, auch wenn der Zustand schnell wechselt
+        for w in warn {
+            self.warn_seen.insert(w, now);
+        }
+        self.warn_seen.retain(|_, t| now - *t < 0.8);
+        let mut shown: Vec<&String> = self.warn_seen.keys().collect();
+        shown.sort();
+        if !shown.is_empty() {
+            let txt: Vec<&str> = shown.iter().map(|s| s.as_str()).collect();
+            ui.label(RichText::new(format!("⚠ {}", txt.join(" · "))).color(RED));
         }
         if restart {
             self.msim = None;

@@ -5,7 +5,6 @@
 
 wait 10
 cmd N
-palette digital
 wait 3
 tool Logikschalter
 click 0 0

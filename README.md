@@ -38,10 +38,16 @@ cargo test --workspace              # alle Tests (Simulator, Netzliste, Modell)
   Drähte färben sich nach ihrer Spannung (grau 0 V, orange positiv, blau negativ),
   LEDs und Glühlampen leuchten entsprechend ihrem Strom bzw. ihrer Leistung.
 - **Infofenster** beim Überfahren: Spannung, Strom, Leistung, Netzname, Leitzustand der Diode.
-- **Inspektor:** Werte mit SI-Präfix eingeben (`4k7`, `100n`, `2,2 mA`, `1M`) und
-  live sehen, wie U, I und P reagieren, inkl. Ohm-Probe und Warnungen (¼-W-Grenze, LED-Überstrom).
-- **Oszilloskop:** Zeitverlauf an allen Messpunkten, Zeitbasis 100 µs … 1 s,
-  automatische Neumessung nach jeder Änderung.
+- **Inspektor:** Werte als Zahl mit Vorsatz aus einer Liste (µF, kΩ, mA …) oder aus den
+  gängigen Normwerten wählen; direkt getippt geht auch (`4k7`, `100n`, `2,2m`). Live sehen,
+  wie U, I und P reagieren, mit Belastungsanzeige.
+- **Oszilloskop:** Im Echtzeitbetrieb zeigt es die laufende Simulation wie ein echtes Gerät:
+  Zeitbasis 100 µs … 1 s, Trigger auf die steigende Flanke des ersten Messpunkts (periodische
+  Signale stehen still), Bild anhalten.
+- **Bearbeiten:** Kopieren, Ausschneiden, Einfügen (⌘/Strg + C, X, V; eingefügt wird unter
+  dem Mauszeiger). Markierte Leitungen lassen sich als Ganzes verschieben, angeschlossene
+  Drähte und Bauteile bleiben verbunden.
+- **Bauteilpalette** als Ziehharmonika mit Suchfeld, jedes Bauteil genau einmal.
 - **Tutorial-Leiste** wie in nnlab: Erklärung, Formeln, übliche Werte und Experimente
   zu jedem Bauteil und zu den Grundlagen (Knoten, Masse, Ohm, Kirchhoff, Arbeitspunkt …),
   mit Live-Werten des ausgewählten Bauteils.
@@ -64,9 +70,11 @@ cargo test --workspace              # alle Tests (Simulator, Netzliste, Modell)
   Zwischen den Schwellen oder an offenen Eingängen ist der Pegel X, der Ausgang liefert dann
   eine halbe Spannung und es fließt Querstrom. Ausgänge haben Innenwiderstand, der Laststrom
   kommt aus dem VCC-Anschluss. Was ein IC an seinen Anschlüssen sieht, zeigen farbige Pins.
+  Jedes IC hat einen Abblockkondensator (100 nF); bricht die Versorgung unter Last ein,
+  schaltet es mit etwas Hysterese ab und wieder ein.
 - **Echtzeit:** Sobald ein IC, ein Kondensator, eine Spule oder eine Wechsel- oder
   Rechteckquelle in der Schaltung ist, läuft die Simulation fortlaufend ab dem Einschalten: Kondensatoren laden sich sichtbar, der 555 blinkt, Taster
-  wirken sofort. Tempo-Regler (Zeitlupe bis 0,001×), Pause, Neustart. Schaltzeitpunkte werden
+  wirken sofort. Uhr, Pause, Neustart und Tempo-Regler (Zeitlupe bis 0,001×) in der Statuszeile. Schaltzeitpunkte werden
   auf den Zeitschritt genau gesucht. Ideale Logikbausteine lassen sich mit Analogteilen
   mischen (5 V, Schwelle 2,5 V).
 - **Stromfluss:** Wandernde Punkte zeigen auf jedem Leitungsstück, wohin wie viel Strom fließt
@@ -75,6 +83,8 @@ cargo test --workspace              # alle Tests (Simulator, Netzliste, Modell)
 - **Grenzwerte:** Bauteile brennen bei zu viel Strom oder Leistung durch (LED 30 mA, Widerstand
   ¼ W, Glühlampe doppelte Nennleistung, Dioden und Transistoren nach Datenblatt). Die Belastung
   läuft wie die Erwärmung durch einen Tiefpass (τ = 0,1 s), kurze Spitzen schaden also nicht.
+  Nach einer Änderung bleiben 2,5 s Schonfrist mit Warnung, damit man erst die Leitung ziehen
+  und dann den Widerstand einsetzen kann.
   Heiße Bauteile pulsieren rot, durchgebrannte sind durchgestrichen und leiten nicht mehr;
   „Ersetzen“ im Inspektor oder ⌘Z repariert. Abschaltbar über „🔥 Grenzwerte“.
 - **Eigene ICs:** Eine Schaltung mit „IC-Anschlüssen“ wird per Klick zum Baustein (Bibliothek
@@ -151,6 +161,7 @@ elab/
     ├── src/lessons/tasks.rs  Aufgaben: Ziele, am Verhalten geprüft
     ├── src/flow.rs       Stromfluss: Ströme auf jedem Leitungsstück
     ├── src/limits.rs     Grenzwerte und Erwärmung, Durchbrennen
+    ├── src/log.rs        Protokoll und Hänger-Wächter (~/.elab/logs)
     ├── src/editor.rs     Zeichenfläche, Werkzeuge, Live-Darstellung
     ├── src/panels.rs     Logikanalysator, Wahrheitstabelle, Echtzeit-Digitalbetrieb
     ├── src/mixed.rs      Echtzeitbetrieb gemischter Schaltungen
@@ -160,6 +171,13 @@ elab/
     ├── src/script.rs     Testskripte für automatisierte Oberflächentests
     └── src/main.rs       Fenster, Panels, Inspektor, Oszilloskop, Dateien
 ```
+
+## Protokoll und Fehlersuche
+
+elab schreibt nach `~/.elab/logs/elab.log`: Start, Simulationsabbrüche, langsame Bilder und
+Abstürze. Ein Wächter meldet Hänger: Braucht ein Bild länger als zwei Sekunden, steht im
+Protokoll, womit die App beschäftigt war, und der Schaltplan liegt als `haenger-….elab`
+daneben (bei einem Absturz als `absturz.elab`). Diese Dateien helfen beim Nachstellen.
 
 ## Oberflächentests
 
@@ -176,6 +194,7 @@ cargo run --release -- --script crates/elab-app/ui-tests/eigenes_ic.txt
 cargo run --release -- --script crates/elab-app/ui-tests/uebung_transistor.txt
 cargo run --release -- --script crates/elab-app/ui-tests/durchbrennen.txt
 cargo run --release -- --script crates/elab-app/ui-tests/aufgabe_led.txt
+cargo run --release -- --script crates/elab-app/ui-tests/bearbeiten.txt
 ```
 
 - `schaltung_bauen`: LED-Schaltung von Grund auf, Verdrahten, Verschieben, Drehen, Undo
@@ -187,6 +206,7 @@ cargo run --release -- --script crates/elab-app/ui-tests/aufgabe_led.txt
 - `uebung_transistor`: geführte Übung „NPN-Transistor als Schalter“ Schritt für Schritt durchspielen
 - `durchbrennen`: Vorwiderstand zu klein, die LED brennt durch, ⌘Z repariert
 - `aufgabe_led`: Aufgabe „LED mit genau 10 mA“ lösen bis zur Messung mit dem Amperemeter
+- `bearbeiten`: markierte Leitung verschieben, alles kopieren und einfügen
 - `zufallstest.py`: erzeugt Skripte mit vielen zufälligen schnellen Aktionen über alle Bauteile
   (`python3 crates/elab-app/ui-tests/zufallstest.py 1 150 > /tmp/z.txt`)
 

@@ -168,6 +168,20 @@ impl MixBuilder {
 
     /// Baut einen IC: Eingänge, Logikkern, Ausgangsstufen, Versorgung.
     fn ic(&mut self, c: &mut Circuit, part: &Part, nodes: &[NodeId], floating: &[bool]) -> Result<Option<SimRole>, SimError> {
+        let role = self.ic_inner(c, part, nodes, floating)?;
+        // Jedes IC hat einen Abblockkondensator (100 nF) zwischen VCC und GND, wie auf jeder
+        // echten Platine. Er macht die Versorgung träge: Bricht sie unter Last ein, schwingt
+        // das IC nicht unendlich schnell zwischen an und aus.
+        if let Some(&g) = self.group_of.get(&part.id) {
+            let (vcc, gnd) = (self.spec.groups[g].vcc, self.spec.groups[g].gnd);
+            if vcc != gnd {
+                c.add(&format!("{}~Cb", part.name), ElementKind::Capacitor { a: vcc, b: gnd, c: 100e-9, ic: None })?;
+            }
+        }
+        Ok(role)
+    }
+
+    fn ic_inner(&mut self, c: &mut Circuit, part: &Part, nodes: &[NodeId], floating: &[bool]) -> Result<Option<SimRole>, SimError> {
         let name = &part.name;
         let fl = |k: usize, v: Logic| floating[k].then_some(v);
         let mut src = Vec::new();

@@ -8,7 +8,10 @@ example LED mit Vorwiderstand
 wait 10
 dump ui-out/b_ok.json
 value R1 47
-wait 30
+# erst Warnung, nach der Schonfrist (2,5 s) brennt die LED durch
+wait 10
+dump ui-out/b_warnung.json
+wait 300
 select LED1
 wait 5
 shot ui-out/b_kaputt.ppm

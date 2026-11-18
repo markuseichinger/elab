@@ -471,6 +471,10 @@ impl<'c> Simulator<'c> {
                         if f < 1.0 {
                             sys.conductance(*out, *lo, (1.0 - f) / r);
                         }
+                    } else {
+                        // Hochohmig (aus oder ohne Versorgung): Leckstrom wie bei einem echten
+                        // Ausgang, hält einen sonst offenen Knoten definiert
+                        sys.conductance(*out, *lo, 1e-9);
                     }
                 }
                 ElementKind::OpAmp { p, n, out, vcc, vee, model } => {

@@ -6,9 +6,8 @@
 wait 10
 cmd N
 wait 3
-palette ic
 wait 3
-paldrag Gleichspannung -4 0
+paldrag Gleichspannung 5 V -4 0
 paldrag Masse -4 9
 paldrag NAND-Baustein 12 0
 tool wire

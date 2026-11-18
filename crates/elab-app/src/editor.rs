@@ -69,6 +69,13 @@ pub struct Editor {
     wire_hfirst: bool,
     hover: Hover,
     last_rect: Rect,
+    /// Stromfluss: Lage der Punkte je Leitungsstück (in Rastern, Richtung kleineres → größeres
+    /// Ende), wird mit dem Strom aufintegriert. So laufen die Punkte gleichmäßig weiter,
+    /// auch wenn sich der Strom ändert oder umkehrt.
+    flow_phase: HashMap<(P, P), f64>,
+    flow_time: f64,
+    /// Rasterpunkt unter dem Mauszeiger (zum Einfügen)
+    pub pointer: Option<P>,
 }
 
 impl Default for Editor {
@@ -87,6 +94,9 @@ impl Default for Editor {
             wire_hfirst: true,
             hover: Hover::None,
             last_rect: Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)),
+            flow_phase: HashMap::new(),
+            flow_time: 0.0,
+            pointer: None,
         }
     }
 }
@@ -324,6 +334,7 @@ impl Editor {
         let pointer = resp.hover_pos();
         let g = pointer.map(|p| self.to_grid(r, p));
         let gs = pointer.map(|p| self.snap(r, p));
+        self.pointer = gs;
         let shift = ui.input(|i| i.modifiers.shift);
 
         // --- Bauteil aus der Palette hereingezogen ---
@@ -503,18 +514,25 @@ impl Editor {
         if !live.flow.is_empty() && !matches!(self.drag, Drag::Move { .. }) {
             // Stromfluss: Punkte wandern in technischer Stromrichtung, schneller bei mehr Strom
             let t = ui.input(|i| i.time);
+            let dt = (t - self.flow_time).clamp(0.0, 0.1);
+            self.flow_time = t;
             let s = self.s();
             let mut moving = false;
+            let mut phases = HashMap::with_capacity(live.flow.len());
             for &(a, b, i) in live.flow {
+                // Einheitliche Richtung je Leitungsstück: vom kleineren zum größeren Ende
+                let (from, to, i) = if (a.x, a.y) <= (b.x, b.y) { (a, b, i) } else { (b, a, -i) };
+                let speed = if i.abs() < 10e-6 { 0.0 } else { (1.0 + 0.9 * (i.abs() / 1e-5).log10()).clamp(0.4, 5.0) * i.signum() };
+                let phase = self.flow_phase.get(&(from, to)).copied().unwrap_or(0.0) + speed * dt;
+                let phase = phase.rem_euclid(1.0);
+                phases.insert((from, to), phase);
                 if i.abs() < 10e-6 {
                     continue;
                 }
                 moving = true;
-                let (from, to) = if i > 0.0 { (a, b) } else { (b, a) };
-                let speed = (1.0 + 0.9 * (i.abs() / 1e-5).log10()).clamp(0.4, 5.0);
                 let len = ((to.x - from.x).abs() + (to.y - from.y).abs()) as f64;
                 let spacing = 1.0;
-                let mut d = (t * speed).rem_euclid(spacing);
+                let mut d = phase;
                 let (dx, dy) = ((to.x - from.x).signum() as f64, (to.y - from.y).signum() as f64);
                 let alpha = (90.0 + 40.0 * (i.abs() / 1e-5).log10()).clamp(90.0, 255.0) as u8;
                 while d < len {
@@ -523,6 +541,7 @@ impl Editor {
                     d += spacing;
                 }
             }
+            self.flow_phase = phases;
             if moving {
                 ui.ctx().request_repaint();
             }
@@ -583,6 +602,16 @@ impl Editor {
                         }
                         self.sel_parts.insert(id);
                     }
+                    self.drag = Drag::Move {
+                        origin: osnap,
+                        last: P::default(),
+                        base: doc.clone(),
+                        parts: self.sel_parts.clone(),
+                        wires: self.sel_wires.clone(),
+                    };
+                }
+                Hover::Wire(id) if self.sel_wires.contains(&id) => {
+                    // Markierte Leitung: mit der ganzen Auswahl verschieben
                     self.drag = Drag::Move {
                         origin: osnap,
                         last: P::default(),

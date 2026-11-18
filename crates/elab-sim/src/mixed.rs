@@ -22,6 +22,7 @@
 use crate::analysis::{node_voltage, OpResult, Simulator, StepCheck, TranOptions, TranResult, TranState};
 use crate::circuit::{Circuit, ElementKind, NodeId, SimError};
 use crate::digital::{Comp, CompKind, DigitalSim, Logic};
+use std::collections::VecDeque;
 use std::time::Instant;
 
 /// Schaltschwelle U = U(gnd) + `frac` · (U(vcc) − U(gnd)) + `abs`.
@@ -133,6 +134,9 @@ pub struct MixedSpec {
 /// Spannung, ab der ein verpolter Baustein Schaden nimmt.
 const REVERSE_LIMIT: f64 = -0.7;
 
+/// Einschalthysterese der Versorgung in V
+const POWER_HYST: f64 = 0.3;
+
 fn power_state(g: &PowerGroup, x: &[f64], prev: PowerState) -> PowerState {
     if prev.destroyed() {
         return prev;
@@ -142,7 +146,9 @@ fn power_state(g: &PowerGroup, x: &[f64], prev: PowerState) -> PowerState {
         PowerState::Overvoltage
     } else if u < REVERSE_LIMIT {
         PowerState::Reversed
-    } else if u < g.v_min {
+    } else if u < g.v_min || (prev == PowerState::Low && u < g.v_min + POWER_HYST) {
+        // Mit Hysterese: Ein Baustein, der wegen Unterspannung aus war, startet erst wieder,
+        // wenn die Versorgung deutlich über der Mindestspannung liegt.
         PowerState::Low
     } else {
         PowerState::Ok
@@ -286,7 +292,14 @@ pub struct MixedSim {
     bps: Vec<f64>,
     bp_until: f64,
     pub steps: usize,
+    /// Mitschrift für das Oszilloskop: beobachtete Knoten, Verlauf, aufbewahrte Dauer
+    watch: Vec<NodeId>,
+    trace: VecDeque<(f64, Vec<f64>)>,
+    trace_span: f64,
 }
+
+/// Höchstzahl gespeicherter Zeitpunkte der Mitschrift
+const TRACE_MAX: usize = 200_000;
 
 impl MixedSim {
     /// Baut die Simulation auf und schaltet ein: Kondensatoren leer, Spulen stromlos,
@@ -339,7 +352,51 @@ impl MixedSim {
         st.h = h_max * 0.02;
         let mut opts = opts;
         opts.h_min = (h_max * 1e-12).max(1e-18);
-        Ok(Self { sim, spec, dsim, st, obs_val, power, floating, opts, ev_tol: (h_max * 1e-4).max(1e-9), bps: Vec::new(), bp_until: 0.0, steps: 0 })
+        Ok(Self {
+            sim,
+            spec,
+            dsim,
+            st,
+            obs_val,
+            power,
+            floating,
+            opts,
+            ev_tol: (h_max * 1e-4).max(1e-9),
+            bps: Vec::new(),
+            bp_until: 0.0,
+            steps: 0,
+            watch: Vec::new(),
+            trace: VecDeque::new(),
+            trace_span: 0.0,
+        })
+    }
+
+    /// Legt fest, welche Knoten mitgeschrieben werden und wie lange (in s Simulationszeit)
+    /// der Verlauf aufbewahrt wird. Andere Knoten löschen die bisherige Mitschrift.
+    pub fn set_watch(&mut self, nodes: Vec<NodeId>, span: f64) {
+        if nodes != self.watch {
+            self.watch = nodes;
+            self.trace.clear();
+            self.push_trace();
+        }
+        self.trace_span = span;
+    }
+
+    /// Mitschrift: (Zeit, Spannung je beobachtetem Knoten), älteste zuerst.
+    pub fn trace(&self) -> &VecDeque<(f64, Vec<f64>)> {
+        &self.trace
+    }
+
+    fn push_trace(&mut self) {
+        if self.watch.is_empty() {
+            return;
+        }
+        let x = self.st.x();
+        let t = self.st.t;
+        self.trace.push_back((t, self.watch.iter().map(|&n| node_voltage(x, n)).collect()));
+        while self.trace.len() > TRACE_MAX || self.trace.front().is_some_and(|f| f.0 < t - self.trace_span) {
+            self.trace.pop_front();
+        }
     }
 
     /// Aktuelle Simulationszeit in s.
@@ -465,6 +522,7 @@ impl MixedSim {
         let mut check = |t0: f64, x0: &[f64], t1: f64, x1: &[f64]| locate(spec, obs_val, power, floating, ev_tol, t0, x0, t1, x1);
         let hit = self.sim.tran_step(&mut self.st, limit, &self.opts, &mut check)?;
         self.steps += 1;
+        self.push_trace();
 
         // Digitalteil nachziehen
         let tn = ns(self.st.t);

@@ -6,7 +6,6 @@
 wait 10
 cmd N
 wait 3
-palette ic
 wait 3
 paldrag IC-Anschluss -2 0
 paldrag NICHT-Gatter 6 0
@@ -23,7 +22,6 @@ saveic Test-Inverter
 wait 3
 cmd N
 wait 3
-palette ic
 wait 3
 paldrag Eigenes IC 6 0
 paldrag Logikschalter -2 0

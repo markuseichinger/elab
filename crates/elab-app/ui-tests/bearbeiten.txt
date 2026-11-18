@@ -1,0 +1,26 @@
+# Bearbeiten: eine markierte Leitung als Ganzes verschieben (Anschlüsse bleiben
+# verbunden), dann alles markieren, kopieren und einfügen.
+# Aufruf: cargo run --release -- --script crates/elab-app/ui-tests/bearbeiten.txt
+
+wait 10
+example LED mit Vorwiderstand
+wait 10
+dump ui-out/e_start.json
+# untere Leitung anklicken (markieren) und nach unten ziehen
+click 3 6
+wait 3
+drag 3 6 3 9
+wait 5
+dump ui-out/e_verschoben.json
+shot ui-out/e_verschoben.ppm
+# alles im Rahmen markieren, kopieren, einfügen
+# (die Kopie landet mittig unter dem Mauszeiger, hier unten rechts)
+drag -4 -10 18 12
+wait 3
+cmd C
+wait 3
+cmd V
+wait 5
+dump ui-out/e_kopiert.json
+shot ui-out/e_kopiert.ppm
+quit

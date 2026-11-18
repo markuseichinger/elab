@@ -255,6 +255,68 @@ pub struct ScopeData {
     pub t_stop: f64,
     pub millis: f64,
     pub steps: usize,
+    /// Echtzeit: Anzeige steht auf einer Triggerflanke (sonst läuft sie durch)
+    pub triggered: bool,
+}
+
+/// Messpunkte mit ihrem Simulatorknoten: (Name, Farbindex, Knoten).
+pub fn probe_nodes(doc: &Document, nl: &Netlist) -> Vec<(String, usize, elab_sim::NodeId)> {
+    probes(doc)
+        .into_iter()
+        .filter_map(|(id, name, k)| {
+            let net = *nl.pin_nets.get(&id)?.first()?;
+            let info = &nl.nets[net];
+            let node = if info.is_gnd { 0 } else { nl.circuit.find_node(&info.name)? };
+            Some((name, k, node))
+        })
+        .collect()
+}
+
+/// Oszilloskop im Echtzeitbetrieb: zeigt das zuletzt aufgezeichnete Fenster der Länge
+/// `t_win`. Mit Trigger beginnt das Fenster kurz vor der letzten steigenden Flanke des
+/// ersten Messpunkts durch die Mitte seines Bereichs. Periodische Signale stehen dann
+/// still. Ohne Flanke läuft die Anzeige durch (Rollmodus).
+pub fn live_scope(doc: &Document, nl: &Netlist, ms: &MixedSim, t_win: f64, trigger: bool) -> ScopeData {
+    let probes = probe_nodes(doc, nl);
+    let tr = ms.trace();
+    let now = ms.time();
+    let pre = 0.1 * t_win;
+    let mut start = (now - t_win).max(0.0);
+    let mut triggered = false;
+    if trigger && !tr.is_empty() && !probes.is_empty() {
+        let recent = tr.iter().filter(|p| p.0 >= now - 2.0 * t_win);
+        let (lo, hi) = recent.fold((f64::MAX, f64::MIN), |(lo, hi), p| (lo.min(p.1[0]), hi.max(p.1[0])));
+        if hi - lo > 1e-3 {
+            let level = 0.5 * (lo + hi);
+            // jüngste steigende Flanke, nach der noch ein ganzes Fenster aufgezeichnet ist
+            for k in (1..tr.len()).rev() {
+                let (t1, v1) = (tr[k].0, tr[k].1[0]);
+                let (t0, v0) = (tr[k - 1].0, tr[k - 1].1[0]);
+                if t1 < now - 2.0 * t_win {
+                    break;
+                }
+                if v0 < level && v1 >= level {
+                    let tc = t0 + (level - v0) / (v1 - v0) * (t1 - t0);
+                    if tc + t_win - pre <= now && tc - pre >= 0.0 {
+                        start = tc - pre;
+                        triggered = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let end = start + t_win;
+    let traces = probes
+        .iter()
+        .enumerate()
+        .map(|(j, (name, k, _))| Trace {
+            name: name.clone(),
+            color_idx: *k,
+            pts: tr.iter().filter(|p| p.0 >= start && p.0 <= end).map(|p| [p.0 - start, p.1[j]]).collect(),
+        })
+        .collect();
+    ScopeData { traces, t_stop: t_win, millis: 0.0, steps: 0, triggered }
 }
 
 /// Messpunkte in Dokumentreihenfolge: (Teile-ID, Name, Farbindex).
@@ -294,7 +356,7 @@ pub fn record(doc: &Document, nl: &Netlist, t_stop: f64) -> Result<ScopeData, St
         };
         traces.push(Trace { name, color_idx, pts: res.time.iter().zip(v).map(|(&t, v)| [t, v]).collect() });
     }
-    Ok(ScopeData { traces, t_stop, millis: t0.elapsed().as_secs_f64() * 1e3, steps })
+    Ok(ScopeData { traces, t_stop, millis: t0.elapsed().as_secs_f64() * 1e3, steps, triggered: false })
 }
 
 // ---------------------------------------------------------------------------

@@ -202,9 +202,9 @@ impl App {
                             egui::Frame::new().inner_margin(egui::Margin { left: 18, right: 0, top: 2, bottom: 4 }).show(ui, |ui| {
                                 ui.label(RichText::new(&s.text).size(14.0));
                                 if !run.lesson.task {
-                                    ui.label(RichText::new(format!("Warum? {}", s.why)).size(12.5).color(Color32::from_rgb(170, 176, 190)));
+                                    ui.label(RichText::new(format!("Warum? {}", s.why)).size(13.0).color(Color32::from_rgb(200, 205, 215)));
                                 } else if run.tips.contains(&i) {
-                                    ui.label(RichText::new(format!("💡 {}", s.why)).size(12.5).color(Color32::from_rgb(170, 176, 190)));
+                                    ui.label(RichText::new(format!("💡 {}", s.why)).size(13.0).color(Color32::from_rgb(200, 205, 215)));
                                 }
                                 if let Some(nl) = nl {
                                     let ctx = Ctx { doc, nl, op: self.op.as_ref().ok(), anchor: run.anchor, scope_open: self.show_scope };

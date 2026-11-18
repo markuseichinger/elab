@@ -2,6 +2,7 @@
 
 mod editor;
 mod lesson_ui;
+mod log;
 mod mixed;
 mod panels;
 mod script;
@@ -24,23 +25,6 @@ use theme::*;
 use tutorial::Topic;
 
 /// Reiter der Bauteilpalette.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PalTab {
-    Analog,
-    Digital,
-    Ic,
-}
-
-impl PalTab {
-    fn groups(self) -> Vec<(&'static str, Vec<PartKind>)> {
-        match self {
-            PalTab::Analog => PartKind::palette_analog(),
-            PalTab::Digital => PartKind::palette_digital(),
-            PalTab::Ic => PartKind::palette_ic(),
-        }
-    }
-}
-
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
     let arg = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
@@ -51,6 +35,7 @@ fn main() -> eframe::Result {
     let size = arg("--size").and_then(|s| s.split_once('x').and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?]))).unwrap_or([1560.0, 980.0]);
     let file = args.iter().skip(1).find(|a| a.ends_with(".elab")).map(PathBuf::from);
     install_crash_handler(script.is_none());
+    log::init();
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("elab – Elektronik-Lernlabor")
@@ -105,6 +90,10 @@ fn install_crash_handler(dialog: bool) {
         let _ = std::fs::create_dir_all(data_dir());
         let path = data_dir().join("absturz.txt");
         let _ = std::fs::write(&path, &report);
+        log::write(&format!("ABSTURZ: {info}\n{bt}"));
+        if let Some(doc) = log::last_doc() {
+            let _ = std::fs::write(log::dir().join("absturz.elab"), doc);
+        }
         eprintln!("{report}");
         if dialog {
             let _ = rfd::MessageDialog::new()
@@ -118,6 +107,45 @@ fn install_crash_handler(dialog: bool) {
         }
     }));
 }
+
+/// Vorsätze, die für eine Einheit sinnvoll sind: (Zehnerpotenz, Zeichen).
+fn unit_prefixes(unit: &str) -> Vec<(i32, &'static str)> {
+    let all = [(-12, "p"), (-9, "n"), (-6, "µ"), (-3, "m"), (0, ""), (3, "k"), (6, "M")];
+    let (lo, hi) = match unit {
+        "Ω" => (0, 6),
+        "F" => (-12, -3),
+        "H" => (-6, 0),
+        "V" => (-3, 3),
+        "A" => (-6, 0),
+        "W" => (-3, 3),
+        "Hz" => (-3, 6),
+        "s" => (-9, 0),
+        _ => (-12, 6),
+    };
+    all.into_iter().filter(|p| p.0 >= lo && p.0 <= hi).collect()
+}
+
+/// Zahl ohne überflüssige Nullen, mit Komma: 4,7 · 100 · 2,2
+fn fmt_mantissa(m: f64) -> String {
+    let s = format!("{:.4}", m);
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    s.replace('.', ",")
+}
+
+/// Gängige Werte zum Auswählen (Normreihe E6/E12 in den üblichen Dekaden).
+fn common_values(unit: &str) -> &'static [f64] {
+    match unit {
+        "Ω" => &[10.0, 22.0, 47.0, 100.0, 220.0, 330.0, 470.0, 680.0, 1e3, 2.2e3, 3.3e3, 4.7e3, 6.8e3, 10e3, 22e3, 47e3, 100e3, 220e3, 470e3, 1e6],
+        "F" => &[100e-12, 1e-9, 10e-9, 22e-9, 47e-9, 100e-9, 220e-9, 470e-9, 1e-6, 2.2e-6, 4.7e-6, 10e-6, 22e-6, 47e-6, 100e-6, 470e-6, 1e-3],
+        "H" => &[10e-6, 100e-6, 1e-3, 10e-3, 100e-3, 1.0],
+        "V" => &[1.5, 3.0, 3.3, 5.0, 9.0, 12.0, 24.0],
+        "Hz" => &[1.0, 2.0, 10.0, 50.0, 100.0, 1e3, 10e3],
+        _ => &[],
+    }
+}
+
+/// Schonfrist in s nach einer Änderung, bevor ein überlastetes Bauteil durchbrennt
+const BURN_GRACE: f64 = 2.5;
 
 const TIMEBASES: [(f64, &str); 9] = [
     (100e-6, "100 µs"),
@@ -151,9 +179,14 @@ struct App {
     /// Nach Rückgängig/Wiederholen brennt nichts durch, bis die Schaltung geändert wird
     /// (sonst ließe sich nicht hinter das Durchbrennen zurückgehen).
     burn_hold: Option<Document>,
+    /// Letzter Stand und Zeitpunkt einer Änderung (Schonfrist vor dem Durchbrennen)
+    edit_doc: Option<Document>,
+    edit_t: f64,
+    grace_warned: bool,
     scope_t: f64,
-    scope_auto: bool,
-    scope_now: bool,
+    /// Echtzeit-Oszilloskop: auf steigende Flanke triggern, Anzeige angehalten
+    scope_trigger: bool,
+    scope_hold: bool,
     scope_key: Option<(Document, u64)>,
     scope: Option<Result<ScopeData, String>>,
     topic: Topic,
@@ -174,7 +207,13 @@ struct App {
     an_window: f64,
     truth: Option<Result<sim::TruthTable, String>>,
     bottom_tab: panels::BottomTab,
-    palette: PalTab,
+    /// Interne Zwischenablage und Zahl der Einfügungen (jede weiter versetzt)
+    clip: Option<elab_app::model::Clip>,
+    paste_n: i32,
+    /// Suchtext der Bauteilpalette
+    pal_filter: String,
+    /// Testskript: Palettenkachel, die aufgeklappt und ins Bild gerollt werden soll
+    pal_focus: Option<String>,
     // Gemischte Schaltungen (Echtzeit)
     msim: Option<elab_sim::MixedSim>,
     msim_key: Option<Document>,
@@ -187,6 +226,9 @@ struct App {
     pin_logic: HashMap<u32, Vec<Option<elab_sim::digital::Logic>>>,
     /// Simulation kommt nicht hinterher
     msim_lag: bool,
+    /// Zuletzt „langsamer als Echtzeit“ (Zeitpunkt), Warnungen mit letztem Auftreten
+    lag_seen: f64,
+    warn_seen: HashMap<String, f64>,
     /// Bibliothek eigener ICs (Titel = Name)
     ic_lib: Vec<Document>,
     /// Dialog „Als IC speichern“: eingegebener Name
@@ -199,6 +241,7 @@ struct App {
     script_pressed: Option<u32>,
     /// Palettenkacheln des letzten Bildes (für Testskripte)
     tile_rects: Vec<(String, egui::Rect)>,
+    tile_rects_prev: Vec<(String, egui::Rect)>,
     /// Zuletzt automatisch gesicherter Stand und Zeitpunkt
     autosaved: Option<Document>,
     autosave_due: f64,
@@ -206,7 +249,11 @@ struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, script: Option<Vec<script::Cmd>>, file: Option<PathBuf>) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        let mut vis = egui::Visuals::dark();
+        // Fließtext hell genug für längere Erklärungen (egui-Standard ist ein dunkles Grau)
+        vis.widgets.noninteractive.fg_stroke.color = TEXT;
+        vis.widgets.inactive.fg_stroke.color = Color32::from_rgb(210, 214, 222);
+        cc.egui_ctx.set_visuals(vis);
         let ex = examples::all().remove(0);
         let mut app = Self {
             saved: ex.doc.clone(),
@@ -224,9 +271,12 @@ impl App {
             thermal: Default::default(),
             thermal_rt: false,
             burn_hold: None,
+            edit_doc: None,
+            edit_t: 0.0,
+            grace_warned: false,
             scope_t: ex.scope_t,
-            scope_auto: true,
-            scope_now: false,
+            scope_trigger: true,
+            scope_hold: false,
             scope_key: None,
             scope: None,
             topic: Topic::Welcome,
@@ -245,7 +295,10 @@ impl App {
             an_window: 10.0,
             truth: None,
             bottom_tab: panels::BottomTab::Scope,
-            palette: PalTab::Analog,
+            clip: None,
+            paste_n: 0,
+            pal_filter: String::new(),
+            pal_focus: None,
             msim: None,
             msim_key: None,
             nl_gen: 0,
@@ -253,12 +306,15 @@ impl App {
             mixed_logic: Vec::new(),
             pin_logic: HashMap::new(),
             msim_lag: false,
+            lag_seen: -10.0,
+            warn_seen: HashMap::new(),
             ic_lib: load_ic_lib(),
             save_ic: None,
             lesson: None,
             lesson_hinted: Default::default(),
             script_pressed: None,
             tile_rects: Vec::new(),
+            tile_rects_prev: Vec::new(),
             autosaved: None,
             autosave_due: 0.0,
         };
@@ -287,18 +343,10 @@ impl App {
                 .parts
                 .iter()
                 .any(|p| matches!(p.kind, PartKind::Clock { .. } | PartKind::DFlipFlop | PartKind::JkFlipFlop | PartKind::Counter4));
-            let has_ic = ex.doc_has_ic();
             self.replace_doc(ex.doc);
             self.saved = self.doc.clone();
             self.file = None;
             self.scope_t = ex.scope_t;
-            self.palette = if has_ic {
-                PalTab::Ic
-            } else if ex.digital {
-                PalTab::Digital
-            } else {
-                PalTab::Analog
-            };
             self.bottom_tab = if ex.digital {
                 if sequential {
                     panels::BottomTab::Analyzer
@@ -348,6 +396,25 @@ impl App {
             self.burn_hold = None;
         }
         if burned.is_empty() || self.burn_hold.is_some() {
+            return;
+        }
+        // Schonfrist nach jeder Änderung: Wer erst die Leitung zieht und dann den Widerstand
+        // einsetzt, soll nicht schon dazwischen alles zerstören. Stattdessen eine Warnung.
+        let now = ctx.input(|i| i.time);
+        if self.edit_doc.as_ref() != Some(&self.doc) {
+            self.edit_doc = Some(self.doc.clone());
+            self.edit_t = now;
+            self.grace_warned = false;
+        }
+        let left = BURN_GRACE - (now - self.edit_t);
+        if left > 0.0 {
+            if !self.grace_warned {
+                self.grace_warned = true;
+                let names: Vec<String> = burned.iter().filter_map(|(id, why)| self.doc.part(*id).map(|p| format!("{} ({why})", p.name))).collect();
+                self.flash(format!("🔥 Überlastet: {}. Ändere die Schaltung, sonst brennt es gleich durch!", names.join(", ")), RED);
+                self.topic = Topic::Limits;
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
             return;
         }
         self.hist.checkpoint(&self.doc);
@@ -477,6 +544,78 @@ impl App {
         if new {
             self.new_doc();
         }
+        // Kopieren, Ausschneiden, Einfügen (⌘/Strg + C, X, V). egui meldet sie als eigene
+        // Ereignisse; Strg+C auf dem Mac kommt als Taste.
+        let (mut copy, mut cut, mut paste) = (false, false, None::<String>);
+        ctx.input_mut(|i| {
+            for e in &i.events {
+                match e {
+                    egui::Event::Copy => copy = true,
+                    egui::Event::Cut => cut = true,
+                    egui::Event::Paste(t) => paste = Some(t.clone()),
+                    _ => {}
+                }
+            }
+            // Tastenkombinationen nur, wenn kein eigenes Ereignis kam (sonst doppelt)
+            for m in [Modifiers::CTRL, Modifiers::COMMAND] {
+                let (c, x, v) = (i.consume_key(m, Key::C), i.consume_key(m, Key::X), i.consume_key(m, Key::V));
+                copy |= c && !cut;
+                cut |= x && !copy;
+                if v && paste.is_none() {
+                    paste = Some(String::new());
+                }
+            }
+        });
+        if copy || cut {
+            self.copy_selection(ctx, cut);
+        }
+        if let Some(text) = paste {
+            self.paste_clip(&text);
+        }
+    }
+
+    fn copy_selection(&mut self, ctx: &egui::Context, cut: bool) {
+        let clip = self.doc.copy(&self.ed.sel_parts, &self.ed.sel_wires);
+        if clip.is_empty() {
+            return;
+        }
+        ctx.copy_text(clip.to_text());
+        let n = clip.parts.len();
+        self.clip = Some(clip);
+        self.paste_n = 0;
+        if cut {
+            self.hist.checkpoint(&self.doc);
+            self.doc.remove(&self.ed.sel_parts, &self.ed.sel_wires);
+            self.ed.clear_selection();
+            self.flash(format!("{n} Bauteile ausgeschnitten. Einfügen mit ⌘V."), BLUE);
+        } else {
+            self.flash(format!("{n} Bauteile kopiert. Einfügen mit ⌘V."), BLUE);
+        }
+    }
+
+    /// Fügt die Zwischenablage ein: zuerst elabs eigene, sonst ein Ausschnitt aus dem
+    /// Systemspeicher (z. B. aus einem anderen elab-Fenster).
+    fn paste_clip(&mut self, text: &str) {
+        let clip = elab_app::model::Clip::from_text(text).or_else(|| self.clip.clone());
+        let Some(clip) = clip.filter(|c| !c.is_empty()) else { return };
+        self.paste_n += 1;
+        // Unter den Mauszeiger, sonst schräg versetzt neben das Original
+        let off = match (self.ed.pointer, clip.center()) {
+            (Some(m), Some(c)) => m - c,
+            // Maus nicht über dem Schaltplan: rechts neben die vorhandene Schaltung
+            _ => {
+                let right = self.doc.bbox().map_or(0, |b| b.2.ceil() as i32);
+                let left = clip.parts.iter().map(|p| p.bbox().0.floor() as i32).chain(clip.wires.iter().map(|w| w.0.x.min(w.1.x))).min().unwrap_or(0);
+                self.ed.fit_request = true;
+                elab_app::model::P::new(right - left + 4, 0)
+            }
+        };
+        self.hist.checkpoint(&self.doc);
+        let (parts, wires) = self.doc.paste(&clip, off);
+        self.ed.clear_selection();
+        self.ed.sel_parts = parts;
+        self.ed.sel_wires = wires;
+        self.ed.tool = Tool::Select;
     }
 
     // ------------------------------------------------------------------
@@ -488,6 +627,7 @@ impl App {
         pressed.sort();
         let key_ok = self.sim_key.as_ref().is_some_and(|(d, on, p)| *d == self.doc && *on == self.sim_on && *p == pressed);
         if !key_ok {
+            log::set_doc(serde_json::to_string(&self.doc).unwrap_or_default());
             let nl = netlist::build_with(&self.doc, &self.pressed);
             self.nl_gen += 1;
             self.op = if !self.sim_on {
@@ -506,12 +646,14 @@ impl App {
         }
         let t_bits = self.scope_t.to_bits();
         let stale = self.scope_key.as_ref().is_none_or(|(d, t)| *d != self.doc || *t != t_bits);
-        if self.show_scope && (self.scope_now || (self.scope_auto && stale)) {
+        // Ohne Echtzeit ist der Verlauf konstant und schnell berechnet. In Echtzeit zeigt das
+        // Oszilloskop die laufende Simulation (scope_ui).
+        let realtime = self.nl.as_ref().is_some_and(sim::realtime);
+        if self.show_scope && stale && !realtime {
             if let Some(nl) = &self.nl {
                 self.scope = Some(sim::record(&self.doc, nl, self.scope_t));
             }
             self.scope_key = Some((self.doc.clone(), t_bits));
-            self.scope_now = false;
         }
     }
 
@@ -721,67 +863,82 @@ impl App {
         });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            for (tab, label) in [(PalTab::Analog, "Analog"), (PalTab::Digital, "Digital"), (PalTab::Ic, "ICs")] {
-                if ui.selectable_label(self.palette == tab, RichText::new(label).size(14.0).strong()).clicked() {
-                    self.palette = tab;
-                    match tab {
-                        PalTab::Digital => self.topic = Topic::Logic,
-                        PalTab::Ic => self.topic = Topic::RealIc,
-                        PalTab::Analog => {}
-                    }
-                }
+            ui.add(egui::TextEdit::singleline(&mut self.pal_filter).hint_text("🔍 Bauteil suchen").desired_width(200.0));
+            if !self.pal_filter.is_empty() && ui.small_button("✕").clicked() {
+                self.pal_filter.clear();
             }
         });
-        let mut groups = self.palette.groups();
-        if self.palette == PalTab::Ic {
-            let mut own = vec![PartKind::Port];
-            own.extend(self.ic_lib.iter().map(|d| PartKind::Custom { name: d.title.clone(), def: Box::new(d.clone()) }));
-            groups.push(("Eigene ICs", own));
-        }
+        let mut groups = PartKind::palette();
+        let mut own = vec![PartKind::Port];
+        own.extend(self.ic_lib.iter().map(|d| PartKind::Custom { name: d.title.clone(), def: Box::new(d.clone()) }));
+        groups.push(("Eigene ICs", own));
+        let filter = self.pal_filter.trim().to_lowercase();
+        let matches = |k: &PartKind| filter.is_empty() || tile_key(k).to_lowercase().contains(&filter) || k.prefix().to_lowercase() == filter;
         let mut remove_ic: Option<String> = None;
-        self.tile_rects.clear();
+        let mut save_ic = false;
+        self.tile_rects_prev = std::mem::take(&mut self.tile_rects);
+        // Anfangs offen: die Grundbauteile; die übrigen Gruppen per Klick aufklappen
+        const OPEN: [&str; 5] = ["Quellen & Masse", "Passiv", "Halbleiter", "Schalter", "Messen"];
         for (cat, kinds) in groups {
-            ui.label(RichText::new(cat).small().color(MUTED));
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
-                for kind in kinds {
-                    let selected = matches!(&self.ed.tool, Tool::Place(k) if *k == kind);
-                    let r =
-                        tile(ui, &kind, selected).on_hover_text(format!("{}: in den Schaltplan ziehen oder anklicken und absetzen", kind.label()));
-                    self.tile_rects.push((kind.label().to_string(), r.rect));
-                    if r.drag_started() {
-                        self.topic = Topic::of(&kind);
-                        self.ed.place_rot = 0;
-                        self.ed.tool = Tool::Select;
-                        self.ed.palette_drag = Some(kind.clone());
+            let kinds: Vec<PartKind> = kinds.into_iter().filter(|k| matches(k)).collect();
+            if kinds.is_empty() && !(cat == "Eigene ICs" && filter.is_empty()) {
+                continue;
+            }
+            let focus = self.pal_focus.as_ref().is_some_and(|f| kinds.iter().any(|k| tile_key(k) == *f));
+            let mut header = egui::CollapsingHeader::new(RichText::new(format!("{cat}  ({})", kinds.len())).size(14.0).strong())
+                .id_salt(cat)
+                .default_open(OPEN.contains(&cat));
+            if !filter.is_empty() || focus {
+                header = header.open(Some(true));
+            }
+            header.show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+                    for kind in kinds {
+                        let selected = matches!(&self.ed.tool, Tool::Place(k) if *k == kind);
+                        let r = tile(ui, &kind, selected)
+                            .on_hover_text(format!("{}: in den Schaltplan ziehen oder anklicken und absetzen", kind.label()));
+                        let visible = ui.clip_rect().contains_rect(r.rect);
+                        if self.pal_focus.as_deref() == Some(tile_key(&kind).as_str()) && !visible {
+                            r.scroll_to_me(Some(egui::Align::Center));
+                        }
+                        if visible {
+                            self.tile_rects.push((tile_key(&kind), r.rect));
+                        }
+                        if r.drag_started() {
+                            self.topic = Topic::of(&kind);
+                            self.ed.place_rot = 0;
+                            self.ed.tool = Tool::Select;
+                            self.ed.palette_drag = Some(kind.clone());
+                        }
+                        if r.dragged() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                        }
+                        if let PartKind::Custom { name, .. } = &kind {
+                            let name = name.clone();
+                            r.context_menu(|ui| {
+                                if ui.button("Aus der Bibliothek entfernen").clicked() {
+                                    remove_ic = Some(name.clone());
+                                    ui.close();
+                                }
+                            });
+                        }
+                        if r.clicked() {
+                            self.topic = Topic::of(&kind);
+                            self.ed.tool = Tool::Place(kind);
+                            self.ed.place_rot = 0;
+                        }
                     }
-                    if r.dragged() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                    }
-                    if let PartKind::Custom { name, .. } = &kind {
-                        let name = name.clone();
-                        r.context_menu(|ui| {
-                            if ui.button("Aus der Bibliothek entfernen").clicked() {
-                                remove_ic = Some(name.clone());
-                                ui.close();
-                            }
-                        });
-                    }
-                    if r.clicked() {
-                        self.topic = Topic::of(&kind);
-                        self.ed.tool = Tool::Place(kind);
-                        self.ed.place_rot = 0;
-                    }
+                });
+                if cat == "Eigene ICs" {
+                    save_ic = ui
+                        .button("💾 Schaltplan als IC speichern …")
+                        .on_hover_text("Die aktuelle Schaltung wird ein Baustein. Ihre IC-Anschlüsse werden die Pins.")
+                        .clicked();
                 }
             });
-            ui.add_space(2.0);
         }
-        if self.palette == PalTab::Ic
-            && ui
-                .button("💾 Schaltplan als IC speichern …")
-                .on_hover_text("Die aktuelle Schaltung wird ein Baustein. Ihre IC-Anschlüsse werden die Pins.")
-                .clicked()
-        {
+        if save_ic {
             self.save_ic = Some(if self.doc.title.is_empty() { String::new() } else { self.doc.title.clone() });
             self.topic = Topic::CustomIc;
         }
@@ -809,7 +966,6 @@ impl App {
         self.ic_lib.retain(|d| d.title != name);
         self.ic_lib.push(def);
         self.ic_lib.sort_by_key(|a| a.title.to_lowercase());
-        self.palette = PalTab::Ic;
         self.flash(format!("IC „{name}“ gespeichert ({} Anschlüsse). Es liegt jetzt unter „Eigene ICs“.", ports.len()), GREEN);
         Ok(())
     }
@@ -872,22 +1028,65 @@ impl App {
     // ------------------------------------------------------------------
 
     /// Textfeld mit SI-Eingabe. Gibt den neuen Wert zurück, wenn er bestätigt wurde.
+    /// Eingabe eines Werts: Zahl, Vorsatz aus der Liste (µ, m, k …) und gängige Werte zur
+    /// Auswahl. In das Zahlenfeld darf man auch „4k7“ oder „100n“ tippen.
     fn si_field(&mut self, ui: &mut egui::Ui, label: &str, unit: &str, value: f64, positive: bool, key: &str) -> Option<f64> {
+        let prefixes = unit_prefixes(unit);
         let k = format!("{key}:{}", value.to_bits());
-        let buf = self.bufs.entry(k).or_insert_with(|| fmt_si(value, unit));
+        let ke = format!("{k}:e");
+        // Vorsatz passend zum Wert (aus der Liste der Einheit)
+        let auto_exp = {
+            let e = if value == 0.0 { 0 } else { ((value.abs().log10() + 1e-9).floor() as i32).div_euclid(3) * 3 };
+            let (lo, hi) = (prefixes.first().map_or(0, |p| p.0), prefixes.last().map_or(0, |p| p.0));
+            e.clamp(lo, hi)
+        };
+        let exp: i32 = self.bufs.get(&ke).and_then(|s| s.parse().ok()).unwrap_or(auto_exp);
+        let buf = self.bufs.entry(k.clone()).or_insert_with(|| fmt_mantissa(value / 10f64.powi(exp))).clone();
+        let mut buf_new = buf.clone();
+        let mut exp_new = exp;
         let mut result = None;
         ui.horizontal(|ui| {
             ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new(label).color(MUTED)));
-            let resp = ui.add(egui::TextEdit::singleline(buf).desired_width(120.0));
-            let parsed = parse_si(buf).filter(|v| v.is_finite() && (!positive || *v > 0.0));
+            let resp = ui.add(egui::TextEdit::singleline(&mut buf_new).desired_width(64.0));
+            let cur = prefixes.iter().find(|p| p.0 == exp).map_or_else(|| unit.to_string(), |p| format!("{}{unit}", p.1));
+            egui::ComboBox::from_id_salt(format!("pre:{key}")).width(58.0).selected_text(cur).show_ui(ui, |ui| {
+                for &(e, p) in &prefixes {
+                    ui.selectable_value(&mut exp_new, e, format!("{p}{unit}"));
+                }
+            });
+            // Zahl mit eigenem Vorsatz („4k7“) gilt absolut, sonst Zahl × gewählter Vorsatz
+            let typed_prefix = buf_new.chars().any(|c| c.is_alphabetic() || c == 'µ');
+            let parsed = parse_si(&buf_new)
+                .map(|m| if typed_prefix { m } else { m * 10f64.powi(exp_new) })
+                .filter(|v| v.is_finite() && (!positive || *v > 0.0));
+            let presets = common_values(unit);
+            if !presets.is_empty() {
+                egui::ComboBox::from_id_salt(format!("std:{key}"))
+                    .width(24.0)
+                    .selected_text("")
+                    .show_ui(ui, |ui| {
+                        ui.label(RichText::new("Gängige Werte").small().color(MUTED));
+                        for &v in presets {
+                            if ui.selectable_label(v == value, fmt_si(v, unit)).clicked() {
+                                result = Some(v);
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Gängige Werte");
+            }
             match parsed {
                 None => {
-                    ui.label(RichText::new("⚠").color(RED)).on_hover_text("Wert nicht lesbar. Beispiele: 4k7, 100n, 2,2 mA, 1M");
+                    ui.label(RichText::new("⚠").color(RED)).on_hover_text("Zahl nicht lesbar. Beispiele: 4,7 oder 100 – oder direkt 4k7, 100n, 2,2m");
                 }
-                Some(v) if resp.lost_focus() && v != value => result = Some(v),
+                Some(v) if (resp.lost_focus() || exp_new != exp) && v != value && result.is_none() => result = Some(v),
                 _ => {}
             }
         });
+        if result.is_none() {
+            self.bufs.insert(k, buf_new);
+            self.bufs.insert(ke, exp_new.to_string());
+        }
         result
     }
 
@@ -1501,7 +1700,7 @@ impl App {
             });
             ui.add_space(4.0);
         }
-        ui.label(RichText::new(d.what).size(14.0));
+        ui.label(RichText::new(d.what).size(14.0).color(TEXT));
         if !d.math.is_empty() {
             ui.add_space(6.0);
             ui.label(RichText::new("Formeln").strong().color(BLUE));
@@ -1512,10 +1711,10 @@ impl App {
         }
         ui.add_space(6.0);
         ui.label(RichText::new("Übliche Werte").strong().color(GREEN));
-        ui.label(d.typical);
+        ui.label(RichText::new(d.typical).size(14.0).color(TEXT));
         ui.add_space(6.0);
         ui.label(RichText::new("Beobachten & ausprobieren").strong().color(VIOLET));
-        ui.label(d.watch);
+        ui.label(RichText::new(d.watch).size(14.0).color(TEXT));
         if !d.related.is_empty() {
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
@@ -1598,20 +1797,45 @@ impl App {
     // ------------------------------------------------------------------
 
     fn scope_ui(&mut self, ui: &mut egui::Ui) {
+        let live = self.msim.is_some();
+        if live && !self.scope_hold {
+            if let (Some(nl), Some(ms)) = (&self.nl, &self.msim) {
+                self.scope = Some(Ok(sim::live_scope(&self.doc, nl, ms, self.scope_t, self.scope_trigger)));
+            }
+        }
         ui.horizontal(|ui| {
             ui.label(RichText::new("Zeitbasis").color(MUTED));
             let cur = TIMEBASES.iter().find(|t| t.0 == self.scope_t).map_or_else(|| fmt_si(self.scope_t, "s"), |t| t.1.to_string());
-            egui::ComboBox::from_id_salt("tb").selected_text(cur).show_ui(ui, |ui| {
-                for (t, name) in TIMEBASES {
-                    ui.selectable_value(&mut self.scope_t, t, name);
+            egui::ComboBox::from_id_salt("tb")
+                .selected_text(cur)
+                .show_ui(ui, |ui| {
+                    for (t, name) in TIMEBASES {
+                        ui.selectable_value(&mut self.scope_t, t, name);
+                    }
+                })
+                .response
+                .on_hover_text("Breite des Bildschirms: so viel Zeit ist von links nach rechts zu sehen");
+            if live {
+                ui.checkbox(&mut self.scope_trigger, "Trigger").on_hover_text(
+                    "Startet das Bild an einer steigenden Flanke des ersten Messpunkts. Periodische Signale stehen dann still. \
+                     Ohne Trigger läuft das Bild durch.",
+                );
+                let label = if self.scope_hold { "▶ Weiter" } else { "⏸ Bild anhalten" };
+                if ui.button(label).on_hover_text("Das aktuelle Bild festhalten, die Simulation läuft weiter").clicked() {
+                    self.scope_hold = !self.scope_hold;
                 }
-            });
-            if ui.button("⟳ Messen").on_hover_text("Zeitverlauf neu simulieren").clicked() {
-                self.scope_now = true;
-            }
-            ui.checkbox(&mut self.scope_auto, "automatisch").on_hover_text("Nach jeder Änderung neu messen");
-            if let Some(Ok(s)) = &self.scope {
-                ui.label(RichText::new(format!("{} Zeitschritte · {}", s.steps, fmt_si(s.millis * 1e-3, "s"))).color(MUTED));
+                if let Some(Ok(s)) = &self.scope {
+                    let (txt, col) = if s.triggered {
+                        ("● getriggert", GREEN)
+                    } else if self.scope_trigger {
+                        ("○ keine Flanke: Bild läuft durch", MUTED)
+                    } else {
+                        ("○ läuft durch", MUTED)
+                    };
+                    ui.label(RichText::new(txt).color(col));
+                }
+            } else {
+                ui.label(RichText::new("Ohne Kondensator, Spule oder Wechselquelle sind alle Spannungen konstant.").color(MUTED));
             }
         });
         let (scale, unit) = if self.scope_t < 1e-3 {
@@ -1623,7 +1847,7 @@ impl App {
         };
         match &self.scope {
             None => {
-                ui.label(RichText::new("Noch keine Messung. „⟳ Messen“ startet die Zeitsimulation.").color(MUTED));
+                ui.label(RichText::new("Noch keine Messung.").color(MUTED));
             }
             Some(Err(e)) => {
                 ui.label(RichText::new(format!("⚠ {e}")).color(RED));
@@ -1635,11 +1859,18 @@ impl App {
                 });
             }
             Some(Ok(s)) => {
-                egui_plot::Plot::new("scope")
+                let t_end = s.t_stop * scale;
+                egui_plot::Plot::new(format!("scope{}", s.t_stop))
                     .legend(egui_plot::Legend::default())
                     .x_axis_label(format!("t / {unit}"))
                     .y_axis_label("U / V")
                     .allow_scroll(false)
+                    .allow_drag(false)
+                    .include_x(0.0)
+                    .include_x(t_end)
+                    .include_y(0.0)
+                    .auto_bounds(egui::Vec2b::new(false, true))
+                    .default_x_bounds(0.0, t_end)
                     .show(ui, |p| {
                         for tr in &s.traces {
                             let pts: Vec<[f64; 2]> = tr.pts.iter().map(|q| [q[0] * scale, q[1]]).collect();
@@ -1724,29 +1955,28 @@ impl App {
             }
             ClickPx(x, y) => self.script.as_mut().unwrap().click(egui::pos2(x, y), Modifiers::NONE),
             PalDrag(label, gx, gy) => {
-                let own = [PartKind::Port.label(), "Eigenes IC"];
-                let has = |t: PalTab| {
-                    t.groups().iter().flat_map(|g| g.1.iter()).any(|k| k.label() == label) || (t == PalTab::Ic && own.contains(&label.as_str()))
-                };
-                let tab = if has(self.palette) {
-                    self.palette
-                } else {
-                    [PalTab::Analog, PalTab::Digital, PalTab::Ic].into_iter().find(|&t| has(t)).unwrap_or(self.palette)
-                };
-                if tab != self.palette {
-                    // Erst den Palettenreiter wechseln, dann im nächsten Schritt ziehen
-                    self.palette = tab;
+                // Nur ziehen, wenn die Kachel ruhig liegt (nicht gerade aufgeklappt oder gerollt)
+                let find = |v: &[(String, egui::Rect)]| v.iter().find(|t| t.0 == label).map(|t| t.1);
+                let stable = find(&self.tile_rects).filter(|r| find(&self.tile_rects_prev) == Some(*r));
+                let Some(rect) = stable else {
+                    // Gruppe aufklappen und Kachel ins Bild rollen, dann nochmal versuchen
+                    let tries = if self.pal_focus.as_deref() == Some(label.as_str()) { 1 } else { 0 };
+                    if tries > 0 && self.script.as_ref().unwrap().retries > 20 {
+                        panic!(
+                            "Skript: Palettenkachel „{label}“ nicht gefunden (sichtbar: {:?})",
+                            self.tile_rects.iter().map(|t| &t.0).collect::<Vec<_>>()
+                        );
+                    }
+                    self.pal_filter.clear();
+                    self.pal_focus = Some(label.clone());
                     let run = self.script.as_mut().unwrap();
+                    run.retries += 1;
                     run.cmds.push_front(PalDrag(label, gx, gy));
                     run.wait = 2;
                     return;
-                }
-                let Some(rect) = self.tile_rects.iter().find(|t| t.0 == label).map(|t| t.1) else {
-                    panic!(
-                        "Skript: Palettenkachel „{label}“ nicht gefunden (vorhanden: {:?})",
-                        self.tile_rects.iter().map(|t| &t.0).collect::<Vec<_>>()
-                    );
                 };
+                self.pal_focus = None;
+                self.script.as_mut().unwrap().retries = 0;
                 let b = to_screen(&self.ed, gx, gy);
                 self.script.as_mut().unwrap().drag(rect.center(), b);
             }
@@ -1885,13 +2115,6 @@ impl App {
                     _ => panels::BottomTab::Scope,
                 };
             }
-            Palette(tab) => {
-                self.palette = match tab {
-                    1 => PalTab::Digital,
-                    2 => PalTab::Ic,
-                    _ => PalTab::Analog,
-                }
-            }
             Pause(on) => self.dig_paused = on,
             SaveIc(name) => {
                 if let Err(e) = self.save_custom_ic(&name) {
@@ -1904,6 +2127,14 @@ impl App {
 }
 
 /// Kachel in der Bauteil-Palette mit Schaltzeichen und Kurzname.
+/// Name einer Palettenkachel (Suche, Testskripte): die Bauteilart, bei Varianten mit Wert.
+fn tile_key(kind: &PartKind) -> String {
+    match kind {
+        PartKind::DcVoltage { v } if *v == 5.0 => format!("{} 5 V", kind.label()),
+        _ => kind.label().to_string(),
+    }
+}
+
 fn tile(ui: &mut egui::Ui, kind: &PartKind, selected: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(72.0, 62.0), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
@@ -1944,7 +2175,8 @@ fn tile(ui: &mut egui::Ui, kind: &PartKind, selected: bool) -> egui::Response {
         symbols::draw(&pen, kind, symbols::Live::default());
     }
     let short = match kind {
-        PartKind::DcVoltage { .. } => "Batterie",
+        PartKind::DcVoltage { v } if *v == 5.0 => "5 V (Logik)",
+        PartKind::DcVoltage { .. } => "Batterie 9 V",
         PartKind::AcVoltage { .. } => "Wechsel",
         PartKind::SquareVoltage { .. } => "Rechteck",
         PartKind::CurrentSource { .. } => "Strom",
@@ -2004,22 +2236,35 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        log::frame_start();
         self.global_keys(&ctx);
+        log::activity("Netzliste und Arbeitspunkt");
         self.update_sim();
+        log::activity("Digitalsimulation");
         self.update_digital(&ctx);
+        log::activity("Echtzeitsimulation");
         self.update_mixed(&ctx);
+        log::activity("Grenzwerte");
         self.check_limits(&ctx);
+        log::activity("Übungsprüfung");
         self.lesson_tick();
+        log::activity("Stromfluss");
         self.flow = match (&self.nl, &self.op, self.show_flow && self.sim_on) {
             (Some(nl), Ok(op), true) => elab_app::flow::wire_flow(&self.doc, nl, op),
             _ => Vec::new(),
         };
+        log::activity("Oberfläche");
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
         self.save_ic_dialog(&ctx);
         egui::Panel::left("left").resizable(true).default_size(330.0).min_size(300.0).show(ui, |ui| {
-            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            // Oben die Palette, unten der Inspektor: beide mit eigenem Rollbereich, damit der
+            // Inspektor nicht unter aufgeklappten Gruppen verschwindet
+            let h = ui.available_height();
+            egui::ScrollArea::vertical().id_salt("pal").max_height(h * 0.56).auto_shrink([false, true]).show(ui, |ui| {
                 self.palette(ui);
-                ui.separator();
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().id_salt("insp").auto_shrink(false).show(ui, |ui| {
                 self.inspector(ui);
             });
         });
@@ -2029,8 +2274,10 @@ impl eframe::App for App {
             });
         }
         if self.show_scope {
+            log::activity("Oszilloskop und Messgeräte");
             egui::Panel::bottom("scope").resizable(true).default_size(270.0).min_size(150.0).show(ui, |ui| self.bottom_ui(ui));
         }
+        log::activity("Schaltplan zeichnen und bearbeiten");
         egui::CentralPanel::no_frame().show(ui, |ui| {
             let mixed = self.msim.is_some();
             let highlight = self.lesson_highlight();
@@ -2076,7 +2323,10 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title_sent = title;
         }
+        log::activity("Sichern");
         self.autosave(&ctx);
+        log::activity("Testskript");
         self.run_script(&ctx);
+        log::frame_end();
     }
 }
