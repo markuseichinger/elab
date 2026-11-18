@@ -17,6 +17,8 @@ pub struct LessonRun {
     pub current: Option<usize>,
     /// Abschluss wurde schon gemeldet
     pub cheered: bool,
+    /// Aufgaben: Schritte, deren Tipp aufgeklappt ist
+    pub tips: std::collections::HashSet<usize>,
 }
 
 /// Bauteil, dessen Übung zu einem Tutorial-Thema passt.
@@ -57,7 +59,35 @@ impl App {
         };
         self.ed.select_only(anchor);
         self.show_tutorial = true;
-        self.lesson = Some(LessonRun { lesson, anchor, progress: Progress::default(), done: Vec::new(), current: Some(0), cheered: false });
+        self.lesson = Some(LessonRun {
+            lesson,
+            anchor,
+            progress: Progress::default(),
+            done: Vec::new(),
+            current: Some(0),
+            cheered: false,
+            tips: Default::default(),
+        });
+    }
+
+    /// Startet eine Aufgabe auf einem neuen Blatt mit ihrem Startbauteil.
+    pub(crate) fn start_task(&mut self, lesson: Lesson) {
+        let mut d = Document { title: lesson.title.clone(), ..Default::default() };
+        let anchor = d.add_part(lesson.start_kind.clone(), P::new(12, 0), 0);
+        self.replace_doc(d);
+        self.flash("Neues Blatt für die Aufgabe. Rückgängig (⌘Z) holt den alten Schaltplan zurück.".into(), BLUE);
+        self.ed.select_only(anchor);
+        self.show_tutorial = true;
+        self.topic = Topic::Tasks;
+        self.lesson = Some(LessonRun {
+            lesson,
+            anchor,
+            progress: Progress::default(),
+            done: Vec::new(),
+            current: Some(0),
+            cheered: false,
+            tips: Default::default(),
+        });
     }
 
     /// Prüft die laufende Übung gegen den aktuellen Stand (jeden Frame).
@@ -65,8 +95,9 @@ impl App {
         let Some(run) = &mut self.lesson else { return };
         if self.doc.part(run.anchor).is_none() {
             let t = run.lesson.title.clone();
+            let what = if run.lesson.task { "Aufgabe" } else { "Übung" };
             self.lesson = None;
-            self.flash(format!("Übung „{t}“ beendet: Das Bauteil wurde gelöscht."), ACCENT);
+            self.flash(format!("{what} „{t}“ beendet: Das vorgegebene Bauteil wurde gelöscht."), ACCENT);
             return;
         }
         let Some(nl) = &self.nl else { return };
@@ -83,7 +114,8 @@ impl App {
         if current.is_none() && !run.cheered {
             run.cheered = true;
             let t = run.lesson.title.clone();
-            self.flash(format!("🎉 Übung „{t}“ geschafft!"), GREEN);
+            let what = if run.lesson.task { "Aufgabe" } else { "Übung" };
+            self.flash(format!("🎉 {what} „{t}“ geschafft!"), GREEN);
         }
     }
 
@@ -127,6 +159,7 @@ impl App {
         let mut stop = false;
         let mut skip = None;
         let mut restart = false;
+        let mut tip = None;
         {
             let run = self.lesson.as_ref().unwrap();
             let doc = &self.doc;
@@ -140,13 +173,17 @@ impl App {
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("🧩 {}", run.lesson.title)).size(16.0).strong().color(GREEN));
+                        let icon = if run.lesson.task { "🎯" } else { "🧩" };
+                        ui.label(RichText::new(format!("{icon} {}", run.lesson.title)).size(16.0).strong().color(GREEN));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.small_button("✕ Beenden").clicked() {
                                 stop = true;
                             }
                         });
                     });
+                    if run.lesson.task {
+                        ui.label(RichText::new(&run.lesson.intro).size(13.0));
+                    }
                     let done_n = run.done.iter().filter(|d| **d).count();
                     ui.add(egui::ProgressBar::new(done_n as f32 / n.max(1) as f32).desired_height(6.0));
                     ui.add_space(4.0);
@@ -164,7 +201,11 @@ impl App {
                         if is_cur {
                             egui::Frame::new().inner_margin(egui::Margin { left: 18, right: 0, top: 2, bottom: 4 }).show(ui, |ui| {
                                 ui.label(RichText::new(&s.text).size(14.0));
-                                ui.label(RichText::new(format!("Warum? {}", s.why)).size(12.5).color(Color32::from_rgb(170, 176, 190)));
+                                if !run.lesson.task {
+                                    ui.label(RichText::new(format!("Warum? {}", s.why)).size(12.5).color(Color32::from_rgb(170, 176, 190)));
+                                } else if run.tips.contains(&i) {
+                                    ui.label(RichText::new(format!("💡 {}", s.why)).size(12.5).color(Color32::from_rgb(170, 176, 190)));
+                                }
                                 if let Some(nl) = nl {
                                     let ctx = Ctx { doc, nl, op: self.op.as_ref().ok(), anchor: run.anchor, scope_open: self.show_scope };
                                     if let Some(h) = (s.hint)(&ctx) {
@@ -177,7 +218,11 @@ impl App {
                                 if !s.pins.is_empty() {
                                     ui.label(RichText::new("Die betroffenen Anschlüsse blinken im Schaltplan.").small().color(MUTED));
                                 }
-                                if ui.small_button("Überspringen ▷").on_hover_text("Diesen Schritt als erledigt markieren").clicked() {
+                                if run.lesson.task {
+                                    if !run.tips.contains(&i) && ui.small_button("💡 Tipp").clicked() {
+                                        tip = Some(i);
+                                    }
+                                } else if ui.small_button("Überspringen ▷").on_hover_text("Diesen Schritt als erledigt markieren").clicked() {
                                     skip = Some(i);
                                 }
                             });
@@ -205,6 +250,9 @@ impl App {
                         });
                     }
                 });
+        }
+        if let (Some(i), Some(run)) = (tip, &mut self.lesson) {
+            run.tips.insert(i);
         }
         if let Some(i) = skip {
             if let Some(run) = &mut self.lesson {

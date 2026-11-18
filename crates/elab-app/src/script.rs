@@ -37,6 +37,8 @@ pub enum Cmd {
     Drag(f32, f32, f32, f32),
     Key(Key, Modifiers),
     Select(String),
+    /// Hauptwert eines Bauteils setzen (Widerstand, Kapazität, Spannung …), wie im Inspektor
+    Value(String, f64),
     Scope(bool),
     Tutorial(bool),
     Timebase(f64),
@@ -76,7 +78,7 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
         let on = |i: usize| t.get(i).is_some_and(|s| *s == "on");
         out.push(match t[0] {
             "example" => Cmd::Example(t[1..].join(" ")),
-            "lesson" => Cmd::Lesson(t.get(1).copied().unwrap_or("start").to_string()),
+            "lesson" => Cmd::Lesson(if t.len() > 1 { t[1..].join(" ") } else { "start".into() }),
             "tool" => Cmd::Tool(t.get(1).unwrap_or(&"select").to_string()),
             "move" => Cmd::Move(f(1)?, f(2)?),
             "click" => Cmd::Click(f(1)?, f(2)?, Modifiers::NONE),
@@ -98,6 +100,10 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
             "cmd" => Cmd::Key(key(1)?, Modifiers::COMMAND),
             "cmdshift" => Cmd::Key(key(1)?, Modifiers::COMMAND | Modifiers::SHIFT),
             "select" => Cmd::Select(t.get(1).unwrap_or(&"").to_string()),
+            "value" => Cmd::Value(
+                t.get(1).unwrap_or(&"").to_string(),
+                elab_app::sim::parse_si(t.get(2).unwrap_or(&"")).ok_or(format!("Zeile {}: Wert fehlt", ln + 1))?,
+            ),
             "scope" => Cmd::Scope(on(1)),
             "tutorial" => Cmd::Tutorial(on(1)),
             "timebase" => Cmd::Timebase(f(1)? as f64),

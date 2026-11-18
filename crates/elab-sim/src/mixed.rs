@@ -496,11 +496,9 @@ impl MixedSim {
     /// Rechnet bis `t_target`, höchstens bis `deadline` (Echtzeitbetrieb).
     /// Gibt zurück, ob das Ziel erreicht wurde.
     pub fn advance(&mut self, t_target: f64, deadline: Option<Instant>) -> Result<bool, SimError> {
-        let mut n = 0;
         while self.st.t < t_target - self.ev_tol * 1e-3 {
             self.step(t_target)?;
-            n += 1;
-            if n % 16 == 0 && deadline.is_some_and(|d| Instant::now() >= d) {
+            if deadline.is_some_and(|d| Instant::now() >= d) {
                 return Ok(false);
             }
         }

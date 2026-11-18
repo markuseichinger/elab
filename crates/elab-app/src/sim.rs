@@ -57,6 +57,8 @@ pub struct OpView {
     /// Spannung je Netz (None = nicht simuliert)
     pub net_v: Vec<Option<f64>>,
     pub parts: HashMap<u32, PartValues>,
+    /// Strom in jedes Bauteil hinein, je Anschluss (für die Stromfluss-Anzeige)
+    pub pin_i: HashMap<u32, Vec<f64>>,
     pub millis: f64,
     pub newton: usize,
 }
@@ -181,7 +183,46 @@ pub fn view(nl: &Netlist, op: &OpResult) -> OpView {
             }
         }
     }
-    OpView { net_v, parts, millis: 0.0, newton: 0 }
+    let pin_i = pin_currents(nl, op);
+    OpView { net_v, parts, pin_i, millis: 0.0, newton: 0 }
+}
+
+/// Ströme in die Anschlüsse aller simulierten Bauteile. Jedes Simulationselement gehört
+/// zu dem Bauteil, dessen Namen es trägt („R1“, „U1:Y“, „A~0“). Ein Anschlussstrom an
+/// einem Knoten, an dem mehrere Pins desselben Bauteils liegen, wird aufgeteilt.
+fn pin_currents(nl: &Netlist, op: &OpResult) -> HashMap<u32, Vec<f64>> {
+    let by_name: HashMap<&str, u32> = nl.simulated.iter().map(|(id, n)| (n.as_str(), *id)).collect();
+    let mut out: HashMap<u32, Vec<f64>> = HashMap::new();
+    let pin_nodes = |id: u32| -> Vec<Option<usize>> {
+        nl.pin_nets.get(&id).map(|pn| pn.iter().map(|&n| nl.circuit.find_node(&nl.nets[n].name)).collect()).unwrap_or_default()
+    };
+    let mut nodes_of: HashMap<u32, Vec<Option<usize>>> = HashMap::new();
+    for e in op.element_names() {
+        let base = e.split([':', '~']).next().unwrap_or(e);
+        let Some(&id) = by_name.get(base) else { continue };
+        let pins = nodes_of.entry(id).or_insert_with(|| pin_nodes(id));
+        let acc = out.entry(id).or_insert_with(|| vec![0.0; pins.len()]);
+        let (Ok(tn), Ok(tc)) = (op.terminal_nodes(e), op.terminal_currents(e)) else { continue };
+        for (node, i) in tn.iter().zip(&tc) {
+            let hits: Vec<usize> = (0..pins.len()).filter(|&k| pins[k] == Some(*node)).collect();
+            for &k in &hits {
+                acc[k] += i / hits.len() as f64;
+            }
+        }
+    }
+    out
+}
+
+/// Läuft die Schaltung in Echtzeit? Gemischte Schaltungen immer, analoge, sobald etwas
+/// zeitabhängig ist (Kondensator, Spule, Wechsel- oder Rechteckquelle): Der Arbeitspunkt
+/// allein würde dort das Wesentliche verstecken.
+pub fn realtime(nl: &Netlist) -> bool {
+    nl.mixed.is_some()
+        || nl.circuit.elements().iter().any(|e| match &e.kind {
+            elab_sim::ElementKind::Capacitor { .. } | elab_sim::ElementKind::Inductor { .. } => true,
+            elab_sim::ElementKind::VSource { wave, .. } | elab_sim::ElementKind::ISource { wave, .. } => !matches!(wave, elab_sim::Waveform::Dc(_)),
+            _ => false,
+        })
 }
 
 /// Startet die Simulation einer gemischten Schaltung (Einschalten bei t = 0).
@@ -189,8 +230,8 @@ pub fn mixed_sim(nl: &Netlist, h_max: f64) -> Result<MixedSim, String> {
     if let Some(e) = &nl.error {
         return Err(e.clone());
     }
-    let m = nl.mixed.as_ref().ok_or("Keine gemischte Schaltung")?;
-    MixedSim::new(nl.circuit.clone(), m.spec.clone(), h_max).map_err(|e| e.to_string())
+    let spec = nl.mixed.as_ref().map(|m| m.spec.clone()).unwrap_or_default();
+    MixedSim::new(nl.circuit.clone(), spec, h_max).map_err(|e| e.to_string())
 }
 
 /// Momentaufnahme einer laufenden gemischten Simulation für die Anzeige.

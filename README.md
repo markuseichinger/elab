@@ -11,6 +11,8 @@ Elektronik in Rust, als Gegenstück zu [nnlab](https://github.com/markuseichinge
 
 ![Echte Bausteine: Timer NE555 als Blinker in Echtzeit, Sägezahn am Kondensator im Oszilloskop](docs/screenshot_ic.png)
 
+![Grenzwerte: Mit 47 Ω Vorwiderstand ist die LED durchgebrannt und leitet nicht mehr](docs/screenshot_grenzwerte.png)
+
 > **Stand: Phase 4** – Analog- und Digitaltechnik, Transistoren, Messgeräte und echte ICs mit
 > Versorgung (74HC/74HCT, NE555, OpAmp, ADC/DAC) in einer gemeinsamen Echtzeitsimulation,
 > eigene ICs aus Teilschaltungen. Dazu Oszilloskop, Logikanalysator, Wahrheitstabelle und Tutorial.
@@ -62,11 +64,19 @@ cargo test --workspace              # alle Tests (Simulator, Netzliste, Modell)
   Zwischen den Schwellen oder an offenen Eingängen ist der Pegel X, der Ausgang liefert dann
   eine halbe Spannung und es fließt Querstrom. Ausgänge haben Innenwiderstand, der Laststrom
   kommt aus dem VCC-Anschluss. Was ein IC an seinen Anschlüssen sieht, zeigen farbige Pins.
-- **Mixed-Signal in Echtzeit:** Sobald ein IC in der Schaltung ist, läuft die Simulation
-  fortlaufend ab dem Einschalten: Kondensatoren laden sich sichtbar, der 555 blinkt, Taster
+- **Echtzeit:** Sobald ein IC, ein Kondensator, eine Spule oder eine Wechsel- oder
+  Rechteckquelle in der Schaltung ist, läuft die Simulation fortlaufend ab dem Einschalten: Kondensatoren laden sich sichtbar, der 555 blinkt, Taster
   wirken sofort. Tempo-Regler (Zeitlupe bis 0,001×), Pause, Neustart. Schaltzeitpunkte werden
   auf den Zeitschritt genau gesucht. Ideale Logikbausteine lassen sich mit Analogteilen
   mischen (5 V, Schwelle 2,5 V).
+- **Stromfluss:** Wandernde Punkte zeigen auf jedem Leitungsstück, wohin wie viel Strom fließt
+  (technische Stromrichtung, Tempo logarithmisch zum Strom). An Knoten sieht man, wie sich
+  der Strom aufteilt – Kirchhoff zum Anschauen. Im Echtzeitbetrieb pendelt er mit.
+- **Grenzwerte:** Bauteile brennen bei zu viel Strom oder Leistung durch (LED 30 mA, Widerstand
+  ¼ W, Glühlampe doppelte Nennleistung, Dioden und Transistoren nach Datenblatt). Die Belastung
+  läuft wie die Erwärmung durch einen Tiefpass (τ = 0,1 s), kurze Spitzen schaden also nicht.
+  Heiße Bauteile pulsieren rot, durchgebrannte sind durchgestrichen und leiten nicht mehr;
+  „Ersetzen“ im Inspektor oder ⌘Z repariert. Abschaltbar über „🔥 Grenzwerte“.
 - **Eigene ICs:** Eine Schaltung mit „IC-Anschlüssen“ wird per Klick zum Baustein (Bibliothek
   in `~/.elab/ics`), beliebig oft einsetzbar und schachtelbar; jede Datei trägt die
   Innenschaltung mit, „Innenschaltung öffnen“ zeigt sie.
@@ -76,6 +86,10 @@ cargo test --workspace              # alle Tests (Simulator, Netzliste, Modell)
   passende Messwerte und erkennt typische Fehler (LED verdreht, Basis ohne Widerstand, VCC und
   GND vertauscht, offener Eingang). Start im Tutorial („▶ Übung starten“), nach dem Setzen
   des Bauteils oder über „Beispiele → Geführte Übungen“.
+- **Aufgaben mit Prüfung** („Beispiele → 🎯 Aufgaben“): Spannungsteiler für 3,3 V, LED mit
+  genau 10 mA, UND und ODER aus zwei Schaltern, XOR nur aus NAND, 555-Blinker mit 1 Hz.
+  Leeres Blatt, ein Ziel, Tipps auf Nachfrage. Geprüft wird das Verhalten: Beim UND rechnet
+  elab alle vier Schalterstellungen durch, beim XOR die Wahrheitstabelle.
 - **Undo/Redo** für jede Änderung, **Speichern/Laden** als `.elab` (JSON), automatische
   Sicherung (`~/.elab/letzte-sitzung.elab`, wiederherstellbar über „Beispiele“),
   **24 Beispielschaltungen** in acht Themen: Grundlagen · Kondensator, Spule, Diode ·
@@ -134,6 +148,9 @@ elab/
     ├── tests/components.rs  jedes Bauteil eingefügt und gegen Handrechnung geprüft
     ├── src/examples.rs   Beispielschaltungen, nach Themen gruppiert
     ├── src/lessons.rs    Geführte Übungen: Schritte mit automatischer Prüfung
+    ├── src/lessons/tasks.rs  Aufgaben: Ziele, am Verhalten geprüft
+    ├── src/flow.rs       Stromfluss: Ströme auf jedem Leitungsstück
+    ├── src/limits.rs     Grenzwerte und Erwärmung, Durchbrennen
     ├── src/editor.rs     Zeichenfläche, Werkzeuge, Live-Darstellung
     ├── src/panels.rs     Logikanalysator, Wahrheitstabelle, Echtzeit-Digitalbetrieb
     ├── src/mixed.rs      Echtzeitbetrieb gemischter Schaltungen
@@ -157,6 +174,8 @@ cargo run --release -- --script crates/elab-app/ui-tests/transistor_bauen.txt
 cargo run --release -- --script crates/elab-app/ui-tests/ic_bauen.txt
 cargo run --release -- --script crates/elab-app/ui-tests/eigenes_ic.txt
 cargo run --release -- --script crates/elab-app/ui-tests/uebung_transistor.txt
+cargo run --release -- --script crates/elab-app/ui-tests/durchbrennen.txt
+cargo run --release -- --script crates/elab-app/ui-tests/aufgabe_led.txt
 ```
 
 - `schaltung_bauen`: LED-Schaltung von Grund auf, Verdrahten, Verschieben, Drehen, Undo
@@ -166,6 +185,8 @@ cargo run --release -- --script crates/elab-app/ui-tests/uebung_transistor.txt
 - `ic_bauen`: NAND-Baustein mit Versorgung, Pull-down und LED; Taster; offener Eingang (X)
 - `eigenes_ic`: Inverter aus IC-Anschlüssen bauen, als IC speichern, einsetzen und prüfen
 - `uebung_transistor`: geführte Übung „NPN-Transistor als Schalter“ Schritt für Schritt durchspielen
+- `durchbrennen`: Vorwiderstand zu klein, die LED brennt durch, ⌘Z repariert
+- `aufgabe_led`: Aufgabe „LED mit genau 10 mA“ lösen bis zur Messung mit dem Amperemeter
 - `zufallstest.py`: erzeugt Skripte mit vielen zufälligen schnellen Aktionen über alle Bauteile
   (`python3 crates/elab-app/ui-tests/zufallstest.py 1 150 > /tmp/z.txt`)
 
@@ -180,5 +201,6 @@ Befehle: siehe `src/script.rs`.
 | **2** ✅ | Digital-Engine (0/1/X/Z, ereignisgesteuert), Gatter, Flipflops, Zähler, Logikanalysator, Wahrheitstabelle |
 | **3** ✅ | Transistoren (BJT, MOSFET), Volt- und Amperemeter, Poti, Taster, Gatter aus Transistoren |
 | **4** ✅ | Mixed-Signal in Echtzeit: Logik-ICs mit Versorgung und Schaltschwellen (74HC/74HCT), Schmitt-Trigger, NE555, OpAmp, ADC/DAC, eigene ICs |
-| 5 | Stromfluss-Animation, Echtzeit auch für rein analoge Schaltungen, Kennlinien, Lektionen mit Aufgabenprüfung |
-| 6 | Politur, macOS-Bundle |
+| **5** ✅ | Geführte Übungen, Echtzeit für analoge Schaltungen, Stromfluss, Grenzwerte, Aufgaben mit Prüfung |
+| 6 | Mikrocontroller-Baustein (programmierbar), Kennlinien und Messdaten-Export |
+| 7 | Politur, macOS-Bundle |

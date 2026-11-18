@@ -353,6 +353,17 @@ pub enum TransistorFamily {
 }
 
 impl TransistorType {
+    /// Grenzwerte: (größter Kollektor- bzw. Drainstrom in A, größte Verlustleistung in W)
+    pub fn ratings(self) -> (f64, f64) {
+        match self {
+            TransistorType::Bc547 | TransistorType::Bc557 => (0.1, 0.5),
+            TransistorType::N2222 => (0.6, 0.625),
+            TransistorType::N2n7000 => (0.2, 0.4),
+            TransistorType::Bs250 => (0.18, 0.83),
+            TransistorType::CmosN | TransistorType::CmosP => (0.05, 0.2),
+        }
+    }
+
     pub const ALL: [TransistorType; 7] = [
         TransistorType::Bc547,
         TransistorType::N2222,
@@ -1112,6 +1123,41 @@ pub struct Part {
     pub pos: P,
     /// Vierteldrehungen im Uhrzeigersinn
     pub rot: u8,
+    /// Durch Überlast zerstört: leitet nicht mehr
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub broken: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Was ein Bauteil höchstens verträgt.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Limit {
+    /// Strom in A
+    Current(f64),
+    /// Leistung in W
+    Power(f64),
+}
+
+impl PartKind {
+    /// Grenzwerte, bei deren Überschreiten das Bauteil durchbrennt.
+    pub fn limits(&self) -> Vec<Limit> {
+        use Limit::*;
+        match self {
+            PartKind::Led { .. } => vec![Current(0.03)],
+            PartKind::Lamp { p_nom, .. } => vec![Power(2.0 * p_nom)],
+            PartKind::Resistor { .. } => vec![Power(0.25)],
+            PartKind::Diode { kind: DiodeType::Si1N4148 } => vec![Current(0.3)],
+            PartKind::Diode { kind: DiodeType::Si1N4007 } => vec![Current(1.5)],
+            PartKind::Transistor { kind } => {
+                let (i, p) = kind.ratings();
+                vec![Current(i), Power(p)]
+            }
+            _ => Vec::new(),
+        }
+    }
 }
 
 impl Part {
@@ -1215,7 +1261,7 @@ impl Document {
             _ => self.next_name(kind.prefix()),
         };
         let id = self.new_id();
-        self.parts.push(Part { id, name, kind, pos, rot: rot % 4 });
+        self.parts.push(Part { id, name, kind, pos, rot: rot % 4, broken: false });
         id
     }
 

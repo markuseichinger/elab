@@ -245,6 +245,9 @@ pub struct Lesson {
     pub steps: Vec<Step>,
     /// Bauteil, das beim Start auf leerem Blatt gesetzt wird
     pub start_kind: PartKind,
+    /// Aufgabe mit Prüfung statt geführter Übung: Startet immer auf leerem Blatt, die
+    /// Schritte sind Ziele, Erklärungen gibt es erst auf Nachfrage als Tipp.
+    pub task: bool,
 }
 
 /// Fortschritt einer laufenden Übung.
@@ -320,6 +323,9 @@ pub fn all() -> Vec<Lesson> {
     .filter_map(lesson_for)
     .collect()
 }
+
+mod tasks;
+pub use tasks::tasks;
 
 // ---------------------------------------------------------------------------
 // Bausteine für Schritte
@@ -404,6 +410,7 @@ fn led() -> Lesson {
         outro: "Merke: LED immer mit Vorwiderstand, Kathode (Strich) Richtung Minus. R = (U − U_F) / I.".into(),
         steps,
         start_kind: PartKind::Led { color: LedColor::Rot },
+        task: false,
     }
 }
 
@@ -499,6 +506,7 @@ fn capacitor() -> Lesson {
         outro: "Merke: τ = R · C. Nach τ 63 %, nach 5 τ voll. Die Kondensatorspannung springt nie.".into(),
         steps,
         start_kind: PartKind::Capacitor { c: 100e-9 },
+        task: false,
     }
 }
 
@@ -586,6 +594,7 @@ fn bjt(t: TransistorType) -> Lesson {
         },
         steps,
         start_kind: PartKind::Transistor { kind: t },
+        task: false,
     }
 }
 
@@ -657,6 +666,7 @@ fn mosfet(t: TransistorType) -> Lesson {
         },
         steps,
         start_kind: PartKind::Transistor { kind: t },
+        task: false,
     }
 }
 
@@ -733,6 +743,7 @@ fn gate_ic(gate: GateType) -> Lesson {
         outro: "Merke: VCC und GND zuerst, kein Eingang bleibt offen (Pull-down oder Pull-up), Ausgänge nur mit Vorwiderstand belasten.".into(),
         steps,
         start_kind: PartKind::GateIc { gate, family: crate::model::LogicFamily::Hc },
+        task: false,
     }
 }
 
@@ -809,6 +820,7 @@ fn timer555() -> Lesson {
         outro: "Merke: VCC und /RES an Plus, TRIG und THR verbunden am Kondensator, R_A von Plus nach DIS, R_B von DIS zum Kondensator. f = 1,44 / ((R_A + 2·R_B)·C).".into(),
         steps,
         start_kind: PartKind::Timer555,
+        task: false,
     }
 }
 
@@ -897,6 +909,7 @@ fn opamp(kind: OpAmpType) -> Lesson {
         outro: "Merke: Mit Gegenkopplung gilt U₊ = U₋. Nichtinvertierend: V = 1 + R2/R1. Der Ausgang bleibt immer innerhalb der Versorgung.".into(),
         steps,
         start_kind: PartKind::OpAmp { kind },
+        task: false,
     }
 }
 

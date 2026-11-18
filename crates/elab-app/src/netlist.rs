@@ -76,7 +76,7 @@ pub enum PinSrc {
 }
 
 /// Gemischte Schaltung: Spezifikation für [`elab_sim::MixedSim`] und Zuordnungen.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct MixedNetlist {
     pub spec: MixedSpec,
     /// Netz wird rein digital betrieben (Index wie `nets`, ohne Spannung)
@@ -663,6 +663,16 @@ pub fn build_with(doc_in: &Document, pressed: &HashSet<u32>) -> Netlist {
         }
         let nodes: Vec<usize> = pn.iter().map(|&n| nl.circuit.node(&nl.nets[n].name)).collect();
         let (a, b) = (nodes[0], nodes[1]);
+        // Durchgebrannt: Das Bauteil leitet nicht mehr, nur ein winziger Leckstrom hält die
+        // Knoten definiert.
+        if part.broken && !part.kind.is_ic() {
+            for (k, &n) in nodes.iter().enumerate().skip(1) {
+                if n != a {
+                    let _ = nl.circuit.add(&format!("{}:defekt{k}", part.name), ElementKind::Resistor { a, b: n, r: 1e12 });
+                }
+            }
+            continue;
+        }
         // Mehrteilige Bauteile
         match &part.kind {
             _ if part.kind.is_ic() => {

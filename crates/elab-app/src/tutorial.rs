@@ -58,6 +58,9 @@ pub enum Topic {
     AdcDac,
     RealTime,
     CustomIc,
+    // Verbesserungen
+    Limits,
+    Tasks,
 }
 
 pub struct Doc {
@@ -111,8 +114,19 @@ impl Topic {
     }
 
     /// Themen für das Inhaltsverzeichnis.
-    pub const BASICS: [Topic; 9] =
-        [Topic::Welcome, Topic::Editor, Topic::Nets, Topic::Ground, Topic::Ohm, Topic::Kirchhoff, Topic::OperatingPoint, Topic::Colors, Topic::Scope];
+    pub const BASICS: [Topic; 11] = [
+        Topic::Welcome,
+        Topic::Editor,
+        Topic::Nets,
+        Topic::Ground,
+        Topic::Ohm,
+        Topic::Kirchhoff,
+        Topic::OperatingPoint,
+        Topic::Colors,
+        Topic::Limits,
+        Topic::Scope,
+        Topic::Tasks,
+    ];
 
     /// Themen zu Transistoren und Messgeräten.
     pub const TRANSISTORS: [Topic; 7] =
@@ -513,8 +527,10 @@ pub fn doc(t: Topic) -> Doc {
         },
         RealTime => Doc {
             title: "Echtzeitsimulation",
-            what: "Sobald ein IC in der Schaltung ist, rechnet elab den zeitlichen Verlauf fortlaufend in Echtzeit, statt nur einen \
-                   Arbeitspunkt zu bestimmen. Beim Start ist alles wie beim Einschalten: Kondensatoren sind leer, Flipflops stehen auf 0.\n\n\
+            what: "Sobald ein IC, ein Kondensator, eine Spule oder eine Wechsel- bzw. Rechteckquelle in der Schaltung ist, rechnet elab den \
+                   zeitlichen Verlauf fortlaufend in Echtzeit, statt nur einen Arbeitspunkt zu bestimmen. Beim Start ist alles wie beim \
+                   Einschalten: Kondensatoren sind leer, Flipflops stehen auf 0. Die Farben und der Stromfluss zeigen immer den \
+                   aktuellen Augenblick.\n\n\
                    Analogteil und Logik laufen dabei gemeinsam: Jeder Eingang prüft seine Spannung, und wenn sie eine Schaltschwelle \
                    kreuzt, sucht die Simulation den genauen Zeitpunkt. Dann schaltet die Logik mit ihrer Laufzeit, und der neue \
                    Ausgangspegel wirkt sofort wieder auf die Schaltung.",
@@ -540,6 +556,34 @@ pub fn doc(t: Topic) -> Doc {
             watch: "Beispiel „Volladdierer aus Halbaddierer-ICs“: Schalte A, B und C_ein und vergleiche mit der Wahrheitstabelle. \
                     Fahre über ein Halbaddierer-IC: Die Anschlüsse zeigen ihre Pegel.",
             related: &[RealIc, Logic, TruthTable],
+        },
+        Limits => Doc {
+            title: "Grenzwerte: Bauteile brennen durch",
+            what: "Echte Bauteile vertragen nur begrenzt Strom und Leistung. Wird es zu viel, werden sie heiß und gehen kaputt. \
+                   elab rechnet das mit: Ein Bauteil, das sich der Grenze nähert, färbt sich orange und pulsiert rot. Bleibt es zu \
+                   lange darüber, brennt es durch. Es ist dann rot durchgestrichen und leitet nicht mehr.\n\n\
+                   Kurze Spitzen schaden nicht: Wie ein echtes Bauteil braucht es eine Weile (hier etwa 0,1 s), bis es sich erwärmt. \
+                   Im Inspektor setzt „Ersetzen“ ein neues Bauteil ein, ⌘Z macht das Durchbrennen rückgängig.",
+            math: "Leistung:  P = U · I = I² · R = U² / R\nLED:  I_max ≈ 30 mA\nWiderstand (0207):  P_max = ¼ W\nGlühlampe:  P_max = 2 · P_nenn\n\
+                   BC547:  I_C ≤ 100 mA, P ≤ 0,5 W",
+            typical: "Grenzen in elab: LED 30 mA, 1N4148 300 mA, 1N4007 1,5 A, Widerstände 0,25 W, Glühlampen doppelte Nennleistung. \
+                      Transistoren: BC547/BC557 100 mA und 0,5 W, 2N2222 600 mA, 2N7000 200 mA, BS250 180 mA. \
+                      Fahre über ein Bauteil, um seine Belastung in Prozent zu sehen. Der Knopf „🔥 Grenzwerte“ oben schaltet das ab.",
+            watch: "Nimm „LED mit Vorwiderstand“ und setze den Widerstand auf 47 Ω: Die LED brennt durch. Mit 22 Ω erwischt es auch den \
+                    Widerstand, weil an ihm mehr als ¼ W abfällt. Rechne vorher: Welcher Widerstand ist mindestens nötig?",
+            related: &[Ohm, Led, Resistor],
+        },
+        Tasks => Doc {
+            title: "Aufgaben mit Prüfung",
+            what: "Unter Beispiele → „🎯 Aufgaben“ findest du kleine Bauaufträge: Ein leeres Blatt, ein Ziel, und elab prüft \
+                   laufend, ob deine Schaltung es erfüllt. Anders als bei den geführten Übungen gibt es keine Schritt-für-Schritt-\
+                   Anleitung, nur Hinweise, wenn du nicht weiterkommst.\n\n\
+                   Geprüft wird das Verhalten, nicht der Aufbau: Jede Schaltung, die das Gewünschte tut, zählt.",
+            math: "Spannungsteiler:  U_aus = U · R₂ / (R₁ + R₂)\nVorwiderstand:  R = (U − U_LED) / I\n555 astabil:  f ≈ 1,44 / ((R_A + 2 R_B) · C)",
+            typical: "Die Karte unten im Bild zeigt das Ziel und, was schon erfüllt ist. Mit „Tipp“ gibt es einen Hinweis, \
+                      „Abbrechen“ beendet die Aufgabe.",
+            watch: "Beginne mit „Spannungsteiler für 3,3 V“: Welche zwei Widerstände aus der E-Reihe treffen 3,3 V aus 9 V am besten?",
+            related: &[Ohm, Limits],
         },
         Potentiometer => Doc {
             title: "Potentiometer",

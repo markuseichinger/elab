@@ -140,6 +140,17 @@ struct App {
     nl: Option<Netlist>,
     op: Result<OpView, String>,
     show_scope: bool,
+    /// Stromfluss als wandernde Punkte zeigen
+    show_flow: bool,
+    flow: Vec<elab_app::flow::FlowSeg>,
+    /// Bauteile können durchbrennen
+    limits_on: bool,
+    thermal: elab_app::limits::Thermal,
+    /// Echtzeit beim letzten Erwärmungsschritt (Wechsel setzt die Erwärmung zurück)
+    thermal_rt: bool,
+    /// Nach Rückgängig/Wiederholen brennt nichts durch, bis die Schaltung geändert wird
+    /// (sonst ließe sich nicht hinter das Durchbrennen zurückgehen).
+    burn_hold: Option<Document>,
     scope_t: f64,
     scope_auto: bool,
     scope_now: bool,
@@ -207,6 +218,12 @@ impl App {
             nl: None,
             op: Err(String::new()),
             show_scope: true,
+            show_flow: true,
+            flow: Vec::new(),
+            limits_on: true,
+            thermal: Default::default(),
+            thermal_rt: false,
+            burn_hold: None,
             scope_t: ex.scope_t,
             scope_auto: true,
             scope_now: false,
@@ -305,6 +322,48 @@ impl App {
         }
     }
 
+    /// Erwärmung nachführen und überlastete Bauteile durchbrennen lassen.
+    fn check_limits(&mut self, ctx: &egui::Context) {
+        let rt = self.msim.is_some();
+        if !self.limits_on || rt != self.thermal_rt {
+            self.thermal.reset();
+            self.thermal_rt = rt;
+        }
+        let Ok(view) = &self.op else {
+            self.thermal.reset();
+            return;
+        };
+        if !self.limits_on || !self.sim_on {
+            return;
+        }
+        let t = match &self.msim {
+            Some(ms) => ms.time(),
+            None => ctx.input(|i| i.time),
+        };
+        let burned = self.thermal.update(&self.doc, view, Some(t));
+        if self.thermal.map().values().any(|&h| h > 0.3) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        }
+        if self.burn_hold.as_ref().is_some_and(|d| *d != self.doc) {
+            self.burn_hold = None;
+        }
+        if burned.is_empty() || self.burn_hold.is_some() {
+            return;
+        }
+        self.hist.checkpoint(&self.doc);
+        let mut msg = Vec::new();
+        for (id, why) in &burned {
+            if let Some(p) = self.doc.part_mut(*id) {
+                p.broken = true;
+                msg.push(format!("{} ({why})", p.name));
+            }
+        }
+        self.thermal.reset();
+        let verb = if burned.len() == 1 { "ist" } else { "sind" };
+        self.flash(format!("💥 {} {verb} durchgebrannt. Ersetzen im Inspektor, ⌘Z macht es rückgängig.", msg.join(", ")), RED);
+        self.topic = Topic::Limits;
+    }
+
     fn flash(&mut self, msg: String, col: Color32) {
         self.flash = Some((msg, col, 0.0));
     }
@@ -378,12 +437,14 @@ impl App {
     fn undo(&mut self) {
         if self.hist.undo(&mut self.doc) {
             self.ed.prune(&self.doc);
+            self.burn_hold = Some(self.doc.clone());
         }
     }
 
     fn redo(&mut self) {
         if self.hist.redo(&mut self.doc) {
             self.ed.prune(&self.doc);
+            self.burn_hold = Some(self.doc.clone());
         }
     }
 
@@ -431,7 +492,7 @@ impl App {
             self.nl_gen += 1;
             self.op = if !self.sim_on {
                 Err(String::new())
-            } else if nl.mixed.is_some() {
+            } else if sim::realtime(&nl) {
                 // läuft in Echtzeit (update_mixed)
                 match &nl.error {
                     Some(e) => Err(e.clone()),
@@ -512,6 +573,16 @@ impl App {
                         }
                     }
                 });
+                ui.menu_button(RichText::new("🎯 Aufgaben").size(14.0), |ui| {
+                    ui.label(RichText::new("Selbst bauen, elab prüft das Ergebnis").small().color(MUTED));
+                    ui.separator();
+                    for t in elab_app::lessons::tasks() {
+                        if ui.button(RichText::new(&t.title).size(14.0)).on_hover_text(&t.intro).clicked() {
+                            self.start_task(t);
+                            ui.close();
+                        }
+                    }
+                });
             });
             ui.separator();
             if ui.add_enabled(self.hist.can_undo(), big("⟲")).on_hover_text("Rückgängig (⌘Z)").clicked() {
@@ -527,6 +598,20 @@ impl App {
             if r.clicked() {
                 self.sim_on = !self.sim_on;
                 self.topic = Topic::OperatingPoint;
+            }
+            let r = ui
+                .add(egui::Button::new(RichText::new("〰 Stromfluss").size(15.0)).selected(self.show_flow))
+                .on_hover_text("Strom als wandernde Punkte zeigen (technische Stromrichtung, von + nach −). Je schneller, desto mehr Strom.");
+            if r.clicked() {
+                self.show_flow = !self.show_flow;
+                self.topic = Topic::Kirchhoff;
+            }
+            let r = ui
+                .add(egui::Button::new(RichText::new("🔥 Grenzwerte").size(15.0)).selected(self.limits_on))
+                .on_hover_text("Bauteile brennen bei zu viel Strom oder Leistung durch, wie in echt");
+            if r.clicked() {
+                self.limits_on = !self.limits_on;
+                self.topic = Topic::Limits;
             }
             let r = ui
                 .add(egui::Button::new(RichText::new("📈 Messgeräte").size(15.0)).selected(self.show_scope))
@@ -845,6 +930,32 @@ impl App {
             }
         });
         ui.add_space(2.0);
+        if part.broken {
+            egui::Frame::new().fill(RED.gamma_multiply(0.15)).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
+                ui.label(RichText::new("💥 Durchgebrannt").strong().color(RED));
+                ui.label("Das Bauteil leitet nicht mehr. Beseitige erst die Ursache, sonst brennt das neue gleich wieder durch.");
+                if ui.button("🔧 Ersetzen").clicked() {
+                    self.hist.checkpoint(&self.doc);
+                    self.doc.part_mut(id).unwrap().broken = false;
+                    self.thermal.reset();
+                }
+            });
+            ui.add_space(4.0);
+        } else if !part.kind.limits().is_empty() && self.limits_on {
+            let h = self.thermal.heat(id);
+            let col = if h > 0.8 {
+                RED
+            } else if h > 0.5 {
+                Color32::from_rgb(235, 200, 70)
+            } else {
+                MUTED
+            };
+            ui.horizontal(|ui| {
+                ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Belastung").color(MUTED)));
+                ui.add(egui::ProgressBar::new(h.clamp(0.0, 1.0) as f32).desired_width(120.0).fill(col).text(format!("{:.0} %", h * 100.0)))
+                    .on_hover_text("Anteil am Grenzwert für Strom bzw. Leistung. Über 100 % brennt das Bauteil durch.");
+            });
+        }
         // Name
         if !matches!(part.kind, PartKind::Ground) {
             let k = format!("name:{id}:{}", part.name);
@@ -1368,6 +1479,18 @@ impl App {
         ui.label(RichText::new("Klicke auf ein Bauteil in der Palette oder im Schaltplan.").small().color(MUTED));
         ui.separator();
         self.lesson_card(ui);
+        if self.topic == Topic::Tasks && self.lesson.is_none() {
+            egui::Frame::new().fill(Color32::from_rgb(28, 36, 30)).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("🎯 Aufgaben").strong().color(GREEN));
+                for t in elab_app::lessons::tasks() {
+                    if ui.button(&t.title).on_hover_text(&t.intro).clicked() {
+                        self.start_task(t);
+                    }
+                }
+            });
+            ui.add_space(6.0);
+        }
         let d = tutorial::doc(self.topic);
         ui.label(RichText::new(d.title).size(19.0).strong());
         ui.add_space(4.0);
@@ -1556,6 +1679,11 @@ impl App {
             }
             Lesson(cmd) => match cmd.as_str() {
                 "stop" => self.lesson = None,
+                t if t.starts_with("task ") => {
+                    let name = &t[5..];
+                    let task = elab_app::lessons::tasks().into_iter().find(|l| l.title.starts_with(name)).expect("Skript: unbekannte Aufgabe");
+                    self.start_task(task);
+                }
                 "skip" => {
                     if let Some(run) = &mut self.lesson {
                         if let Some(c) = run.current {
@@ -1643,6 +1771,19 @@ impl App {
                     self.topic = Topic::of(&self.doc.part(id).unwrap().kind);
                 }
             }
+            Value(name, v) => {
+                if let Some(id) = self.doc.part_by_name(&name).map(|p| p.id) {
+                    self.hist.checkpoint(&self.doc);
+                    match &mut self.doc.part_mut(id).unwrap().kind {
+                        PartKind::Resistor { r } => *r = v,
+                        PartKind::Capacitor { c } => *c = v,
+                        PartKind::Inductor { l } => *l = v,
+                        PartKind::DcVoltage { v: u } => *u = v,
+                        PartKind::Potentiometer { pos, .. } => *pos = v,
+                        other => eprintln!("value: {other:?} hat keinen einfachen Wert"),
+                    }
+                }
+            }
             Scope(on) => self.show_scope = on,
             Tutorial(on) => self.show_tutorial = on,
             Timebase(t) => self.scope_t = t,
@@ -1699,6 +1840,7 @@ impl App {
                     "values": values,
                     "logic": logic,
                     "bridged": bridged,
+                    "broken": self.doc.parts.iter().filter(|p| p.broken).map(|p| p.name.clone()).collect::<Vec<_>>(),
                     "undo": self.hist.can_undo(),
                     "tool": format!("{:?}", self.ed.tool),
                     "selected": selected,
@@ -1866,7 +2008,12 @@ impl eframe::App for App {
         self.update_sim();
         self.update_digital(&ctx);
         self.update_mixed(&ctx);
+        self.check_limits(&ctx);
         self.lesson_tick();
+        self.flow = match (&self.nl, &self.op, self.show_flow && self.sim_on) {
+            (Some(nl), Ok(op), true) => elab_app::flow::wire_flow(&self.doc, nl, op),
+            _ => Vec::new(),
+        };
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
         self.save_ic_dialog(&ctx);
         egui::Panel::left("left").resizable(true).default_size(330.0).min_size(300.0).show(ui, |ui| {
@@ -1888,7 +2035,9 @@ impl eframe::App for App {
             let mixed = self.msim.is_some();
             let highlight = self.lesson_highlight();
             let live = LiveData {
+                heat: self.thermal.map(),
                 highlight: &highlight,
+                flow: &self.flow,
                 nl: self.nl.as_ref(),
                 op: self.op.as_ref().ok(),
                 logic: if mixed { Some(&self.mixed_logic[..]) } else { self.dsim.as_ref().map(|d| d.nets()) },

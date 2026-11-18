@@ -34,7 +34,7 @@ pub fn mixed_structure(doc: &Document) -> Document {
 impl App {
     /// Echtzeitsimulation gemischter Schaltungen: aufbauen, bedienen, voranschreiten.
     pub(crate) fn update_mixed(&mut self, ctx: &egui::Context) {
-        let active = self.sim_on && self.nl.as_ref().is_some_and(|nl| nl.mixed.is_some() && nl.error.is_none());
+        let active = self.sim_on && self.nl.as_ref().is_some_and(|nl| sim::realtime(nl) && nl.error.is_none() && !nl.circuit.elements().is_empty());
         if !active {
             self.msim = None;
             self.msim_key = None;
@@ -42,7 +42,8 @@ impl App {
             return;
         }
         let nl = self.nl.as_ref().unwrap();
-        let mx = nl.mixed.as_ref().unwrap();
+        let empty = elab_app::netlist::MixedNetlist::default();
+        let mx = nl.mixed.as_ref().unwrap_or(&empty);
         let key = mixed_structure(&self.doc);
         if self.msim_key.as_ref() != Some(&key) || self.msim.is_none() {
             self.msim_key = Some(key);

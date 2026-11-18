@@ -1,0 +1,37 @@
+# Aufgabe „LED mit genau 10 mA“: auf leerem Blatt (Batterie 5 V vorgegeben)
+# eine LED mit Vorwiderstand bauen, den Widerstand auf 10 mA abgleichen und mit
+# einem Amperemeter nachmessen. Der Dump zeigt den Stand der Aufgabe.
+# Aufruf: cargo run --release -- --script crates/elab-app/ui-tests/aufgabe_led.txt
+
+wait 10
+lesson task LED mit genau
+wait 5
+dump ui-out/a_start.json
+paldrag Masse 12 6
+tool wire
+click 12 2
+click 12 6
+wait 3
+dump ui-out/a_1.json
+tool wire
+click 12 -2
+click 12 -6
+click 22 -6
+click 22 6
+click 12 6
+tool select
+paldrag Widerstand 16 -6
+paldrag Leuchtdiode 22 2
+wait 5
+dump ui-out/a_2.json
+value R1 1k
+wait 5
+dump ui-out/a_3.json
+value R1 320
+wait 5
+dump ui-out/a_4.json
+paldrag Amperemeter 22 -3
+wait 5
+dump ui-out/a_5.json
+shot ui-out/a_5.ppm
+quit

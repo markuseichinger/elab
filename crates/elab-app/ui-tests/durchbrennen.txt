@@ -1,0 +1,21 @@
+# Grenzwerte: Im Beispiel „LED mit Vorwiderstand“ den Vorwiderstand auf 47 Ω
+# setzen. Die LED brennt durch und leitet nicht mehr. Zweimal ⌘Z nimmt erst das
+# Durchbrennen, dann den kleinen Widerstand zurück.
+# Aufruf: cargo run --release -- --script crates/elab-app/ui-tests/durchbrennen.txt
+
+wait 10
+example LED mit Vorwiderstand
+wait 10
+dump ui-out/b_ok.json
+value R1 47
+wait 30
+select LED1
+wait 5
+shot ui-out/b_kaputt.ppm
+dump ui-out/b_kaputt.json
+cmd Z
+wait 2
+cmd Z
+wait 10
+dump ui-out/b_repariert.json
+quit

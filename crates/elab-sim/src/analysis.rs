@@ -773,12 +773,15 @@ impl<'c> Simulator<'c> {
         let nv = self.layout.n_nodes - 1;
         let mut forced: Option<f64> = None;
         let mut retries = 0;
+        // Nach einer Ablehnung nicht mehr an die Grenze „heranschnappen“: Sonst würde der
+        // verkleinerte Schritt wieder auf die alte Länge gedehnt und erneut abgelehnt.
+        let mut rejected = false;
         loop {
             let (t_new, hit) = match forced {
                 Some(tf) => (tf, false),
                 None => {
                     let t_new = st.t + st.h;
-                    if t_new >= t_limit || t_limit - t_new < 0.2 * st.h {
+                    if t_new >= t_limit || (!rejected && t_limit - t_new < 0.2 * st.h) {
                         (t_limit, true)
                     } else {
                         (t_new, false)
@@ -803,6 +806,7 @@ impl<'c> Simulator<'c> {
                 Err(NewtonFail::Singular(r)) => return Err(self.map_fail(NewtonFail::Singular(r), Some(t_new))),
                 Err(NewtonFail::NoConvergence) => {
                     self.stats.rejected_steps += 1;
+                    rejected = true;
                     st.h = h_eff / 8.0;
                     forced = None;
                     if st.h < opts.h_min {
@@ -833,6 +837,7 @@ impl<'c> Simulator<'c> {
                 }
                 if ratio > 1.0 && h_eff > opts.h_min * 10.0 {
                     self.stats.rejected_steps += 1;
+                    rejected = true;
                     st.h = h_eff * (0.9 * ratio.powf(-1.0 / 3.0)).max(0.2);
                     forced = None;
                     continue;

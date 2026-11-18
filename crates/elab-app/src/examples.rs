@@ -792,6 +792,59 @@ mod tests {
         }
     }
 
+    /// Echtzeitbetrieb mit unregelmäßigen Bildwechseln (wie in der App): Die Zeit muss
+    /// immer weiterlaufen, kein Schritt darf hängen bleiben.
+    #[test]
+    fn realtime_examples_advance_with_irregular_frames() {
+        use std::time::{Duration, Instant};
+        for ex in super::all() {
+            let nl = netlist::build(&ex.doc);
+            if !sim::realtime(&nl) || nl.error.is_some() {
+                continue;
+            }
+            let mut ms = sim::mixed_sim(&nl, 1e-3).unwrap_or_else(|e| panic!("{}: {e}", ex.title));
+            let mut seed: u64 = 12345;
+            let start = Instant::now();
+            for _ in 0..300 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let dt = 0.001 + (seed >> 33) as f64 / (1u64 << 31) as f64 * 0.05;
+                let t0 = ms.time();
+                ms.advance(t0 + dt, Some(Instant::now() + Duration::from_millis(50))).unwrap_or_else(|e| panic!("{}: {e}", ex.title));
+                assert!(ms.time() > t0, "{}: Zeit steht bei {t0}", ex.title);
+            }
+            assert!(start.elapsed() < Duration::from_secs(60), "{}: zu langsam", ex.title);
+        }
+    }
+
+    /// Kein Beispiel darf von selbst Bauteile zerstören, auch nicht mit gedrückten Tastern.
+    #[test]
+    fn examples_stay_within_limits() {
+        use crate::limits::Thermal;
+        use crate::model::PartKind;
+        use std::collections::HashSet;
+        for ex in super::all() {
+            let buttons: HashSet<u32> = ex.doc.parts.iter().filter(|p| matches!(p.kind, PartKind::PushButton)).map(|p| p.id).collect();
+            for pressed in [HashSet::new(), buttons] {
+                let nl = netlist::build_with(&ex.doc, &pressed);
+                if nl.error.is_some() {
+                    continue;
+                }
+                let mut th = Thermal::default();
+                if sim::realtime(&nl) {
+                    let mut ms = sim::mixed_sim(&nl, 1e-3).unwrap();
+                    for k in 1..=120 {
+                        ms.run(k as f64 / 60.0).unwrap();
+                        let burned = th.update(&ex.doc, &sim::mixed_view(&nl, &ms), Some(ms.time()));
+                        assert!(burned.is_empty(), "{}: {burned:?}", ex.title);
+                    }
+                } else if let Ok(v) = sim::operating_point(&nl) {
+                    let burned = th.update(&ex.doc, &v, None);
+                    assert!(burned.is_empty(), "{}: {burned:?}", ex.title);
+                }
+            }
+        }
+    }
+
     #[test]
     fn mixed_examples_behave() {
         use crate::model::PartKind;

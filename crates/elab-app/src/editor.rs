@@ -103,6 +103,10 @@ pub struct LiveData<'a> {
     pub pressed: &'a HashSet<u32>,
     /// Rasterpunkte, die pulsierend markiert werden (geführte Übung)
     pub highlight: &'a [P],
+    /// Ströme auf den Leitungsstücken (Stromfluss-Anzeige)
+    pub flow: &'a [elab_app::flow::FlowSeg],
+    /// Erwärmung der Bauteile (1 = Grenzwert), leer wenn Grenzwerte aus
+    pub heat: &'a HashMap<u32, f64>,
 }
 
 impl LiveData<'_> {
@@ -181,7 +185,8 @@ impl Editor {
             return;
         };
         let m = 3.0;
-        let (w, h) = ((x1 - x0 + 2.0 * m) * GRID, (y1 - y0 + 2.0 * m) * GRID);
+        // Mindestens 28 × 18 Raster: Ein einzelnes Bauteil (Start einer Übung) soll Platz drumherum haben
+        let (w, h) = ((x1 - x0 + 2.0 * m).max(28.0) * GRID, (y1 - y0 + 2.0 * m).max(18.0) * GRID);
         self.zoom = (r.width() / w).min(r.height() / h).clamp(0.4, 2.2);
         let c = Vec2::new((x0 + x1) * 0.5, (y0 + y1) * 0.5);
         self.pan = r.size() * 0.5 - c * self.s();
@@ -495,6 +500,33 @@ impl Editor {
             _ => None,
         };
         self.paint(&painter, r, doc, live, gs, ghost);
+        if !live.flow.is_empty() && !matches!(self.drag, Drag::Move { .. }) {
+            // Stromfluss: Punkte wandern in technischer Stromrichtung, schneller bei mehr Strom
+            let t = ui.input(|i| i.time);
+            let s = self.s();
+            let mut moving = false;
+            for &(a, b, i) in live.flow {
+                if i.abs() < 10e-6 {
+                    continue;
+                }
+                moving = true;
+                let (from, to) = if i > 0.0 { (a, b) } else { (b, a) };
+                let speed = (1.0 + 0.9 * (i.abs() / 1e-5).log10()).clamp(0.4, 5.0);
+                let len = ((to.x - from.x).abs() + (to.y - from.y).abs()) as f64;
+                let spacing = 1.0;
+                let mut d = (t * speed).rem_euclid(spacing);
+                let (dx, dy) = ((to.x - from.x).signum() as f64, (to.y - from.y).signum() as f64);
+                let alpha = (90.0 + 40.0 * (i.abs() / 1e-5).log10()).clamp(90.0, 255.0) as u8;
+                while d < len {
+                    let c = self.to_screen(r, (from.x as f64 + dx * d) as f32, (from.y as f64 + dy * d) as f32);
+                    painter.circle_filled(c, (s * 0.11).max(1.5), Color32::from_rgba_unmultiplied(255, 236, 140, alpha));
+                    d += spacing;
+                }
+            }
+            if moving {
+                ui.ctx().request_repaint();
+            }
+        }
         if !live.highlight.is_empty() {
             // Geführte Übung: Anschlüsse, um die es gerade geht, pulsieren
             let t = ui.input(|i| i.time) as f32;
@@ -756,8 +788,20 @@ impl Editor {
                 continue;
             }
             let bridged = live.nl.is_some_and(|nl| nl.bridged.contains(&part.id));
-            let color = if selected {
+            let heat = live.heat.get(&part.id).copied().unwrap_or(0.0);
+            let color = if part.broken {
+                if selected {
+                    ACCENT
+                } else {
+                    Color32::from_rgb(120, 90, 90)
+                }
+            } else if selected {
                 ACCENT
+            } else if heat > 0.6 && live.op.is_some() {
+                // Wird heiß: von Orange nach Rot
+                let k = ((heat - 0.6) / 0.4).clamp(0.0, 1.0) as f32;
+                let pulse = 0.75 + 0.25 * (painter.ctx().input(|i| i.time) * 8.0).sin() as f32;
+                Color32::from_rgb(255, (170.0 * (1.0 - k)) as u8 + 40, 40).gamma_multiply(pulse)
             } else if bridged && live.op.is_some() {
                 Color32::from_rgb(235, 200, 70)
             } else if hovered {
@@ -768,6 +812,7 @@ impl Editor {
                 PART_COL
             };
             let glow = match (&part.kind, vals) {
+                _ if part.broken => 0.0,
                 (PartKind::Led { .. }, Some(v)) if v.i > 1e-4 => (v.i / 0.02).clamp(0.0, 1.0).sqrt() as f32,
                 (PartKind::Lamp { p_nom, .. }, Some(v)) => (v.p / p_nom).clamp(0.0, 1.0) as f32,
                 _ => 0.0,
@@ -793,6 +838,14 @@ impl Editor {
                 Vec::new()
             };
             symbols::draw(&pen, &part.kind, Live { glow, pins, pressed: live.pressed.contains(&part.id) });
+            if part.broken {
+                let (x0, y0, x1, y1) = part.bbox();
+                let rr = Rect::from_min_max(self.to_screen(r, x0, y0), self.to_screen(r, x1, y1)).shrink(s * 0.15);
+                let st = Stroke::new(pw * 1.4, RED);
+                painter.line_segment([rr.left_top(), rr.right_bottom()], st);
+                painter.line_segment([rr.right_top(), rr.left_bottom()], st);
+                painter.text(rr.center_bottom() + Vec2::new(0.0, 2.0), Align2::CENTER_TOP, "defekt", font.clone(), RED);
+            }
             if matches!(part.kind, PartKind::Voltmeter | PartKind::Ammeter) {
                 self.paint_meter(painter, r, part, vals.copied(), live.op.is_some(), s);
                 continue;
@@ -832,7 +885,7 @@ impl Editor {
         if let Some((kind, p)) = &ghost {
             // Grün, wenn das Bauteil in eine bestehende Leitung eingefügt wird
             let rot = doc.snap_rotation(kind, *p, self.place_rot);
-            let probe = elab_app::model::Part { id: 0, name: String::new(), kind: kind.clone(), pos: *p, rot };
+            let probe = elab_app::model::Part { id: 0, name: String::new(), kind: kind.clone(), pos: *p, rot, broken: false };
             let inserts = doc.would_insert(kind, &probe.pins());
             let col = if inserts { GREEN } else { ACCENT.gamma_multiply(0.75) };
             let pen = Pen { painter, origin: self.sp(r, *p), s, rot, color: col, width: pw };
@@ -1023,6 +1076,12 @@ impl Editor {
                 lines.push((format!("{} · {}", part.name, part.kind.label()), Color32::WHITE, true));
                 if part.kind.has_value() {
                     lines.push((part.kind.value_text(), MUTED, false));
+                }
+                if part.broken {
+                    lines.push(("Durchgebrannt: leitet nicht mehr. Im Inspektor ersetzen.".into(), RED, false));
+                } else if let Some(&h) = live.heat.get(&id).filter(|h| **h > 0.3) {
+                    let col = if h > 0.8 { RED } else { Color32::from_rgb(235, 200, 70) };
+                    lines.push((format!("Belastung {:.0} % des Grenzwerts{}", h * 100.0, if h > 0.8 { " – wird heiß!" } else { "" }), col, false));
                 }
                 if let Hover::Pin(_, _, k) = self.hover {
                     let pname = part.kind.pin_names().get(k).cloned().unwrap_or_else(|| "?".into());
