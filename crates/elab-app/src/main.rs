@@ -210,6 +210,8 @@ struct App {
     /// Interne Zwischenablage und Zahl der Einfügungen (jede weiter versetzt)
     clip: Option<elab_app::model::Clip>,
     paste_n: i32,
+    /// Palette als Liste mit Beschreibung statt als Kacheln
+    pal_list: bool,
     /// Suchtext der Bauteilpalette
     pal_filter: String,
     /// Testskript: Palettenkachel, die aufgeklappt und ins Bild gerollt werden soll
@@ -249,11 +251,14 @@ struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, script: Option<Vec<script::Cmd>>, file: Option<PathBuf>) -> Self {
-        let mut vis = egui::Visuals::dark();
-        // Fließtext hell genug für längere Erklärungen (egui-Standard ist ein dunkles Grau)
-        vis.widgets.noninteractive.fg_stroke.color = TEXT;
-        vis.widgets.inactive.fg_stroke.color = Color32::from_rgb(210, 214, 222);
-        cc.egui_ctx.set_visuals(vis);
+        // Bedienleisten hell oder dunkel wie das System, beide mit kontrastreichem Text
+        cc.egui_ctx.set_visuals_of(egui::Theme::Dark, theme::dark_visuals());
+        cc.egui_ctx.set_visuals_of(egui::Theme::Light, theme::light_visuals());
+        match std::env::var("ELAB_THEME").as_deref() {
+            Ok("light") => cc.egui_ctx.set_theme(egui::Theme::Light),
+            Ok("dark") => cc.egui_ctx.set_theme(egui::Theme::Dark),
+            _ => {}
+        }
         let ex = examples::all().remove(0);
         let mut app = Self {
             saved: ex.doc.clone(),
@@ -297,6 +302,7 @@ impl App {
             bottom_tab: panels::BottomTab::Scope,
             clip: None,
             paste_n: 0,
+            pal_list: false,
             pal_filter: String::new(),
             pal_focus: None,
             msim: None,
@@ -694,7 +700,7 @@ impl App {
                 for (cat, desc) in examples::CATEGORIES {
                     let n = all.iter().filter(|e| e.category == cat).count();
                     ui.menu_button(RichText::new(format!("{cat}  ({n})")).size(14.0), |ui| {
-                        ui.label(RichText::new(desc).small().color(MUTED));
+                        ui.label(RichText::new(desc).small().color(muted()));
                         ui.separator();
                         for (k, ex) in all.iter().enumerate().filter(|(_, e)| e.category == cat) {
                             if ui.button(RichText::new(ex.title).size(14.0)).on_hover_text(ex.summary).clicked() {
@@ -706,7 +712,7 @@ impl App {
                 }
                 ui.separator();
                 ui.menu_button(RichText::new("🧩 Geführte Übungen").size(14.0), |ui| {
-                    ui.label(RichText::new("Schritt für Schritt ein Bauteil richtig beschalten").small().color(MUTED));
+                    ui.label(RichText::new("Schritt für Schritt ein Bauteil richtig beschalten").small().color(muted()));
                     ui.separator();
                     for l in elab_app::lessons::all() {
                         if ui.button(RichText::new(&l.title).size(14.0)).on_hover_text(&l.intro).clicked() {
@@ -716,7 +722,7 @@ impl App {
                     }
                 });
                 ui.menu_button(RichText::new("🎯 Aufgaben").size(14.0), |ui| {
-                    ui.label(RichText::new("Selbst bauen, elab prüft das Ergebnis").small().color(MUTED));
+                    ui.label(RichText::new("Selbst bauen, elab prüft das Ergebnis").small().color(muted()));
                     ui.separator();
                     for t in elab_app::lessons::tasks() {
                         if ui.button(RichText::new(&t.title).size(14.0)).on_hover_text(&t.intro).clicked() {
@@ -775,7 +781,7 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             match &self.op {
                 Err(e) if e.is_empty() => {
-                    ui.label(RichText::new("Simulation aus").color(MUTED).strong());
+                    ui.label(RichText::new("Simulation aus").color(muted()).strong());
                 }
                 Err(e) => {
                     ui.label(RichText::new(format!("⚠ {e}")).color(RED).strong());
@@ -796,7 +802,7 @@ impl App {
                             op.newton,
                             fmt_si(op.millis * 1e-3, "s")
                         ))
-                        .color(MUTED),
+                        .color(muted()),
                     );
                     if !nl.bridged.is_empty() {
                         let names: Vec<String> = nl.bridged.iter().filter_map(|id| self.doc.part(*id)).map(|p| p.name.clone()).collect();
@@ -811,7 +817,7 @@ impl App {
             if let (Some(ds), Some(nl)) = (&self.dsim, &self.nl) {
                 let d = nl.digital.as_ref().unwrap();
                 ui.separator();
-                ui.label(RichText::new(format!("Digital: {} Bausteine · t = {}", d.comps.len(), fmt_si(ds.time as f64 * 1e-9, "s"))).color(MUTED));
+                ui.label(RichText::new(format!("Digital: {} Bausteine · t = {}", d.comps.len(), fmt_si(ds.time as f64 * 1e-9, "s"))).color(muted()));
                 let conflicts = ds.conflicts();
                 if !conflicts.is_empty() {
                     let names: Vec<&str> = conflicts.iter().map(|&n| nl.nets[n].name.as_str()).collect();
@@ -863,10 +869,18 @@ impl App {
         });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.pal_filter).hint_text("🔍 Bauteil suchen").desired_width(200.0));
+            ui.add(egui::TextEdit::singleline(&mut self.pal_filter).hint_text("🔍 Bauteil suchen").desired_width(170.0));
             if !self.pal_filter.is_empty() && ui.small_button("✕").clicked() {
                 self.pal_filter.clear();
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.selectable_label(self.pal_list, "☰").on_hover_text("Liste mit Beschreibung").clicked() {
+                    self.pal_list = true;
+                }
+                if ui.selectable_label(!self.pal_list, "▦").on_hover_text("Kacheln").clicked() {
+                    self.pal_list = false;
+                }
+            });
         });
         let mut groups = PartKind::palette();
         let mut own = vec![PartKind::Port];
@@ -877,26 +891,24 @@ impl App {
         let mut remove_ic: Option<String> = None;
         let mut save_ic = false;
         self.tile_rects_prev = std::mem::take(&mut self.tile_rects);
-        // Anfangs offen: die Grundbauteile; die übrigen Gruppen per Klick aufklappen
-        const OPEN: [&str; 5] = ["Quellen & Masse", "Passiv", "Halbleiter", "Schalter", "Messen"];
         for (cat, kinds) in groups {
             let kinds: Vec<PartKind> = kinds.into_iter().filter(|k| matches(k)).collect();
             if kinds.is_empty() && !(cat == "Eigene ICs" && filter.is_empty()) {
                 continue;
             }
             let focus = self.pal_focus.as_ref().is_some_and(|f| kinds.iter().any(|k| tile_key(k) == *f));
-            let mut header = egui::CollapsingHeader::new(RichText::new(format!("{cat}  ({})", kinds.len())).size(14.0).strong())
-                .id_salt(cat)
-                .default_open(OPEN.contains(&cat));
+            let mut header =
+                egui::CollapsingHeader::new(RichText::new(format!("{cat}  ({})", kinds.len())).size(14.0).strong()).id_salt(cat).default_open(true);
             if !filter.is_empty() || focus {
                 header = header.open(Some(true));
             }
+            let list = self.pal_list;
             header.show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
+                let layout = |ui: &mut egui::Ui| {
                     ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
                     for kind in kinds {
                         let selected = matches!(&self.ed.tool, Tool::Place(k) if *k == kind);
-                        let r = tile(ui, &kind, selected)
+                        let r = if list { list_row(ui, &kind, selected) } else { tile(ui, &kind, selected) }
                             .on_hover_text(format!("{}: in den Schaltplan ziehen oder anklicken und absetzen", kind.label()));
                         let visible = ui.clip_rect().contains_rect(r.rect);
                         if self.pal_focus.as_deref() == Some(tile_key(&kind).as_str()) && !visible {
@@ -929,7 +941,12 @@ impl App {
                             self.ed.place_rot = 0;
                         }
                     }
-                });
+                };
+                if list {
+                    ui.vertical(layout);
+                } else {
+                    ui.horizontal_wrapped(layout);
+                }
                 if cat == "Eigene ICs" {
                     save_ic = ui
                         .button("💾 Schaltplan als IC speichern …")
@@ -996,7 +1013,7 @@ impl App {
                 for (s, label) in [(Side::Left, "links"), (Side::Right, "rechts"), (Side::Top, "oben"), (Side::Bottom, "unten")] {
                     let t = side(s);
                     if !t.is_empty() {
-                        ui.label(RichText::new(format!("Anschlüsse {label}: {t}")).color(MUTED));
+                        ui.label(RichText::new(format!("Anschlüsse {label}: {t}")).color(muted()));
                     }
                 }
             }
@@ -1046,7 +1063,7 @@ impl App {
         let mut exp_new = exp;
         let mut result = None;
         ui.horizontal(|ui| {
-            ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new(label).color(MUTED)));
+            ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new(label).color(muted())));
             let resp = ui.add(egui::TextEdit::singleline(&mut buf_new).desired_width(64.0));
             let cur = prefixes.iter().find(|p| p.0 == exp).map_or_else(|| unit.to_string(), |p| format!("{}{unit}", p.1));
             egui::ComboBox::from_id_salt(format!("pre:{key}")).width(58.0).selected_text(cur).show_ui(ui, |ui| {
@@ -1065,7 +1082,7 @@ impl App {
                     .width(24.0)
                     .selected_text("")
                     .show_ui(ui, |ui| {
-                        ui.label(RichText::new("Gängige Werte").small().color(MUTED));
+                        ui.label(RichText::new("Gängige Werte").small().color(muted()));
                         for &v in presets {
                             if ui.selectable_label(v == value, fmt_si(v, unit)).clicked() {
                                 result = Some(v);
@@ -1114,7 +1131,7 @@ impl App {
                     }
                 });
             } else {
-                ui.label(RichText::new("Klicke ein Bauteil an, um seine Werte zu sehen und zu ändern.").color(MUTED));
+                ui.label(RichText::new("Klicke ein Bauteil an, um seine Werte zu sehen und zu ändern.").color(muted()));
             }
             return;
         };
@@ -1147,10 +1164,10 @@ impl App {
             } else if h > 0.5 {
                 Color32::from_rgb(235, 200, 70)
             } else {
-                MUTED
+                muted()
             };
             ui.horizontal(|ui| {
-                ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Belastung").color(MUTED)));
+                ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Belastung").color(muted())));
                 ui.add(egui::ProgressBar::new(h.clamp(0.0, 1.0) as f32).desired_width(120.0).fill(col).text(format!("{:.0} %", h * 100.0)))
                     .on_hover_text("Anteil am Grenzwert für Strom bzw. Leistung. Über 100 % brennt das Bauteil durch.");
             });
@@ -1161,7 +1178,7 @@ impl App {
             let buf = self.bufs.entry(k).or_insert_with(|| part.name.clone());
             let mut new_name = None;
             ui.horizontal(|ui| {
-                ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Name").color(MUTED)));
+                ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Name").color(muted())));
                 let r = ui.add(egui::TextEdit::singleline(buf).desired_width(120.0));
                 let trimmed = buf.trim().to_string();
                 let taken = self.doc.parts.iter().any(|p| p.id != id && p.name == trimmed);
@@ -1201,7 +1218,7 @@ impl App {
                 if let Some(v) = self.si_field(ui, "Nennleistung", "W", p_nom, true, "pn") {
                     new_kind = Some(PartKind::Lamp { v_nom, p_nom: v });
                 }
-                ui.label(RichText::new(format!("Ersatzwiderstand: {}", fmt_si(v_nom * v_nom / p_nom, "Ω"))).color(MUTED));
+                ui.label(RichText::new(format!("Ersatzwiderstand: {}", fmt_si(v_nom * v_nom / p_nom, "Ω"))).color(muted()));
             }
             PartKind::DcVoltage { v } => {
                 if let Some(x) = self.si_field(ui, "Spannung", "V", v, false, "v") {
@@ -1218,7 +1235,7 @@ impl App {
                 if let Some(x) = self.si_field(ui, "Offset", "V", offset, false, "off") {
                     new_kind = Some(PartKind::AcVoltage { amp, freq, offset: x });
                 }
-                ui.label(RichText::new(format!("Effektivwert: {}", fmt_si(amp / 2f64.sqrt(), "V"))).color(MUTED));
+                ui.label(RichText::new(format!("Effektivwert: {}", fmt_si(amp / 2f64.sqrt(), "V"))).color(muted()));
             }
             PartKind::SquareVoltage { low, high, freq } => {
                 if let Some(x) = self.si_field(ui, "Unterer Wert", "V", low, false, "lo") {
@@ -1239,7 +1256,7 @@ impl App {
             PartKind::Diode { kind } => {
                 let mut k = kind;
                 ui.horizontal(|ui| {
-                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Typ").color(MUTED)));
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Typ").color(muted())));
                     egui::ComboBox::from_id_salt(("dt", id)).selected_text(k.label()).show_ui(ui, |ui| {
                         for t in DiodeType::ALL {
                             ui.selectable_value(&mut k, t, t.label());
@@ -1253,7 +1270,7 @@ impl App {
             PartKind::Led { color } => {
                 let mut c = color;
                 ui.horizontal(|ui| {
-                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Farbe").color(MUTED)));
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Farbe").color(muted())));
                     egui::ComboBox::from_id_salt(("lc", id)).selected_text(c.label()).show_ui(ui, |ui| {
                         for t in LedColor::ALL {
                             ui.selectable_value(&mut c, t, format!("{} ({})", t.label(), fmt_si(t.vf(), "V")));
@@ -1267,7 +1284,7 @@ impl App {
             PartKind::Switch { closed } => {
                 let mut c = closed;
                 ui.horizontal(|ui| {
-                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Zustand").color(MUTED)));
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Zustand").color(muted())));
                     ui.checkbox(&mut c, "geschlossen");
                 });
                 if c != closed {
@@ -1277,7 +1294,7 @@ impl App {
             PartKind::Gate { gate } => {
                 let mut g = gate;
                 ui.horizontal(|ui| {
-                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Funktion").color(MUTED)));
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Funktion").color(muted())));
                     egui::ComboBox::from_id_salt(("gt", id)).selected_text(g.label()).show_ui(ui, |ui| {
                         for t in elab_app::model::GateType::ALL.into_iter().filter(|t| t.inputs() == gate.inputs()) {
                             ui.selectable_value(&mut g, t, t.label());
@@ -1291,7 +1308,7 @@ impl App {
             PartKind::LogicInput { on } => {
                 let mut c = on;
                 ui.horizontal(|ui| {
-                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Pegel").color(MUTED)));
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Pegel").color(muted())));
                     ui.checkbox(&mut c, "1 (ein)");
                 });
                 if c != on {
@@ -1303,12 +1320,12 @@ impl App {
                 if let Some(x) = self.si_field(ui, "Frequenz", "Hz", freq, true, "cf") {
                     new_kind = Some(PartKind::Clock { freq: x });
                 }
-                ui.label(RichText::new(format!("Periode: {}", fmt_si(1.0 / freq, "s"))).color(MUTED));
+                ui.label(RichText::new(format!("Periode: {}", fmt_si(1.0 / freq, "s"))).color(muted()));
             }
             PartKind::LogicLed { color } => {
                 let mut c = color;
                 ui.horizontal(|ui| {
-                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Farbe").color(MUTED)));
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Farbe").color(muted())));
                     egui::ComboBox::from_id_salt(("llc", id)).selected_text(c.label()).show_ui(ui, |ui| {
                         for t in LedColor::ALL {
                             ui.selectable_value(&mut c, t, t.label());
@@ -1322,7 +1339,7 @@ impl App {
             PartKind::Transistor { kind } => {
                 let mut k = kind;
                 ui.horizontal(|ui| {
-                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Typ").color(MUTED)));
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Typ").color(muted())));
                     egui::ComboBox::from_id_salt(("tt", id)).selected_text(k.label()).show_ui(ui, |ui| {
                         for t in elab_app::model::TransistorType::ALL.into_iter().filter(|t| t.family() == kind.family()) {
                             ui.selectable_value(&mut k, t, t.label());
@@ -1337,7 +1354,7 @@ impl App {
                     (_, Some(m)) => format!("U_th = {}, K = {}", fmt_si(if m.nmos { m.vth } else { -m.vth }, "V"), fmt_si(m.k, "A/V²")),
                     _ => String::new(),
                 };
-                ui.label(RichText::new(format!("Modell: {info}")).color(MUTED));
+                ui.label(RichText::new(format!("Modell: {info}")).color(muted()));
             }
             PartKind::Potentiometer { r, pos } => {
                 if let Some(v) = self.si_field(ui, "Widerstand", "Ω", r, true, "pr") {
@@ -1346,7 +1363,7 @@ impl App {
                 let mut p = pos * 100.0;
                 let resp = ui
                     .horizontal(|ui| {
-                        ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Stellung").color(MUTED)));
+                        ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Stellung").color(muted())));
                         ui.add(egui::Slider::new(&mut p, 0.0..=100.0).suffix(" %").fixed_decimals(0))
                     })
                     .inner;
@@ -1360,12 +1377,12 @@ impl App {
                     // Live verstellen, ohne für jeden Zwischenschritt einen Undo-Schritt anzulegen
                     self.doc.part_mut(id).unwrap().kind = PartKind::Potentiometer { r, pos: p / 100.0 };
                 }
-                ui.label(RichText::new("Anteil zwischen Schleifer S und B. Pfeiltasten verstellen ebenfalls.").small().color(MUTED));
+                ui.label(RichText::new("Anteil zwischen Schleifer S und B. Pfeiltasten verstellen ebenfalls.").small().color(muted()));
             }
             PartKind::GateIc { gate, family } => {
                 let mut g = gate;
                 ui.horizontal(|ui| {
-                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Funktion").color(MUTED)));
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Funktion").color(muted())));
                     egui::ComboBox::from_id_salt(("gti", id)).selected_text(g.label()).show_ui(ui, |ui| {
                         for t in elab_app::model::GateType::ALL
                             .into_iter()
@@ -1390,7 +1407,7 @@ impl App {
             PartKind::OpAmp { kind } => {
                 let mut k = kind;
                 ui.horizontal(|ui| {
-                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Typ").color(MUTED)));
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Typ").color(muted())));
                     egui::ComboBox::from_id_salt(("oa", id)).selected_text(k.label()).show_ui(ui, |ui| {
                         for t in elab_app::model::OpAmpType::ALL {
                             ui.selectable_value(&mut k, t, t.label());
@@ -1400,28 +1417,28 @@ impl App {
                 if k != kind {
                     new_kind = Some(PartKind::OpAmp { kind: k });
                 }
-                ui.label(RichText::new(k.describe()).small().color(MUTED));
+                ui.label(RichText::new(k.describe()).small().color(muted()));
             }
             PartKind::Timer555 => {
-                ui.label(RichText::new("Bipolarer Timer, 4,5 … 16 V. Ausgang 1 ≈ VCC − 1,7 V.").small().color(MUTED));
+                ui.label(RichText::new("Bipolarer Timer, 4,5 … 16 V. Ausgang 1 ≈ VCC − 1,7 V.").small().color(muted()));
             }
             PartKind::Adc4 => {
-                ui.label(RichText::new("Code = ⌊16 · U_IN / U_REF⌋, Ausgänge wie 74HC.").small().color(MUTED));
+                ui.label(RichText::new("Code = ⌊16 · U_IN / U_REF⌋, Ausgänge wie 74HC.").small().color(muted()));
             }
             PartKind::Dac4 => {
-                ui.label(RichText::new("U_OUT = U_REF · Code / 16, Innenwiderstand 10 kΩ (R-2R).").small().color(MUTED));
+                ui.label(RichText::new("U_OUT = U_REF · Code / 16, Innenwiderstand 10 kΩ (R-2R).").small().color(muted()));
             }
             PartKind::Port => {
                 ui.label(
                     RichText::new("Der Name wird zum Pin-Namen, wenn du die Schaltung als IC speicherst. VCC und GND landen oben und unten.")
                         .small()
-                        .color(MUTED),
+                        .color(muted()),
                 );
             }
             PartKind::Custom { name, def } => {
                 let ports: Vec<String> = elab_app::model::custom_ports(&def).into_iter().map(|p| p.1).collect();
                 let n = def.parts.iter().filter(|p| !matches!(p.kind, PartKind::Port)).count();
-                ui.label(RichText::new(format!("„{name}“: {n} Bauteile innen, Anschlüsse {}", ports.join(", "))).color(MUTED));
+                ui.label(RichText::new(format!("„{name}“: {n} Bauteile innen, Anschlüsse {}", ports.join(", "))).color(muted()));
                 if ui
                     .button("🔍 Innenschaltung öffnen")
                     .on_hover_text("Ersetzt den Schaltplan durch den Inhalt des ICs. ⟲ holt den alten zurück.")
@@ -1466,7 +1483,7 @@ impl App {
                         }
                     });
                     if let PartKind::Button = part.kind {
-                        ui.label(RichText::new("Im Schaltplan gedrückt halten.").small().color(MUTED));
+                        ui.label(RichText::new("Im Schaltplan gedrückt halten.").small().color(muted()));
                     }
                 });
             }
@@ -1518,7 +1535,7 @@ impl App {
                     big_value(ui, ic, &fmt_si(v.ctrl_i, "A"), BLUE);
                     big_value(ui, io, &fmt_si(v.i, "A"), BLUE);
                     if bjt && v.ctrl_i.abs() > 1e-12 && v.i.abs() > 1e-12 {
-                        big_value(ui, "I_C / I_B", &format!("{:.0}", v.i / v.ctrl_i), MUTED);
+                        big_value(ui, "I_C / I_B", &format!("{:.0}", v.i / v.ctrl_i), muted());
                     }
                     big_value(ui, "P", &fmt_si(v.p, "W"), GREEN);
                     if let Some(reg) = v.region {
@@ -1553,7 +1570,7 @@ impl App {
                     big_value(ui, pl, &fmt_si(v.p, "W"), GREEN);
                     if let PartKind::Resistor { r } = part.kind {
                         if v.i.abs() > 1e-15 {
-                            ui.label(RichText::new(format!("U / I = {}  ✓ = R", fmt_si(v.u / v.i, "Ω"))).color(MUTED));
+                            ui.label(RichText::new(format!("U / I = {}  ✓ = R", fmt_si(v.u / v.i, "Ω"))).color(muted()));
                         }
                         if v.p > 0.25 {
                             ui.label(RichText::new(format!("Achtung: {} übersteigt einen ¼-W-Widerstand", fmt_si(v.p, "W"))).color(RED));
@@ -1568,7 +1585,7 @@ impl App {
                     let pn = part.kind.pin_names();
                     if pn.len() == 2 && !matches!(part.kind, PartKind::Voltmeter | PartKind::Ammeter) {
                         ui.label(
-                            RichText::new(format!("U gemessen von {} nach {}; I positiv in dieser Richtung.", pn[0], pn[1])).small().color(MUTED),
+                            RichText::new(format!("U gemessen von {} nach {}; I positiv in dieser Richtung.", pn[0], pn[1])).small().color(muted()),
                         );
                     }
                 }
@@ -1583,14 +1600,14 @@ impl App {
         let fam = kind.family()?;
         let mut f = fam;
         ui.horizontal(|ui| {
-            ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Familie").color(MUTED)));
+            ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Familie").color(muted())));
             egui::ComboBox::from_id_salt(("fam", id)).selected_text(f.label()).show_ui(ui, |ui| {
                 for t in elab_app::model::LogicFamily::ALL {
                     ui.selectable_value(&mut f, t, t.label());
                 }
             });
         });
-        ui.label(RichText::new(f.describe()).small().color(MUTED));
+        ui.label(RichText::new(f.describe()).small().color(muted()));
         (f != fam).then(|| {
             let mut k = kind.clone();
             k.set_family(f);
@@ -1645,7 +1662,7 @@ impl App {
                             "X: Spannung zwischen den Schaltschwellen oder Eingang offen. Offene CMOS-Eingänge brauchen einen Pull-up/-down.",
                         )
                         .small()
-                        .color(MUTED),
+                        .color(muted()),
                     );
                 }
             }
@@ -1675,7 +1692,7 @@ impl App {
                 }
             });
         });
-        ui.label(RichText::new("Klicke auf ein Bauteil in der Palette oder im Schaltplan.").small().color(MUTED));
+        ui.label(RichText::new("Klicke auf ein Bauteil in der Palette oder im Schaltplan.").small().color(muted()));
         ui.separator();
         self.lesson_card(ui);
         if self.topic == Topic::Tasks && self.lesson.is_none() {
@@ -1700,7 +1717,7 @@ impl App {
             });
             ui.add_space(4.0);
         }
-        ui.label(RichText::new(d.what).size(14.0).color(TEXT));
+        ui.label(RichText::new(d.what).size(14.0).color(text()));
         if !d.math.is_empty() {
             ui.add_space(6.0);
             ui.label(RichText::new("Formeln").strong().color(BLUE));
@@ -1711,14 +1728,14 @@ impl App {
         }
         ui.add_space(6.0);
         ui.label(RichText::new("Übliche Werte").strong().color(GREEN));
-        ui.label(RichText::new(d.typical).size(14.0).color(TEXT));
+        ui.label(RichText::new(d.typical).size(14.0).color(text()));
         ui.add_space(6.0);
         ui.label(RichText::new("Beobachten & ausprobieren").strong().color(VIOLET));
-        ui.label(RichText::new(d.watch).size(14.0).color(TEXT));
+        ui.label(RichText::new(d.watch).size(14.0).color(text()));
         if !d.related.is_empty() {
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Siehe auch:").color(MUTED));
+                ui.label(RichText::new("Siehe auch:").color(muted()));
                 for &r in d.related {
                     if ui.link(tutorial::doc(r).title).clicked() {
                         self.topic = r;
@@ -1728,7 +1745,7 @@ impl App {
         }
         ui.add_space(10.0);
         ui.separator();
-        ui.label(RichText::new("Grundlagen").strong().color(MUTED));
+        ui.label(RichText::new("Grundlagen").strong().color(muted()));
         ui.horizontal_wrapped(|ui| {
             for t in Topic::BASICS {
                 if ui.selectable_label(self.topic == t, tutorial::doc(t).title).clicked() {
@@ -1737,7 +1754,7 @@ impl App {
             }
         });
         ui.add_space(6.0);
-        ui.label(RichText::new("Transistoren & Messen").strong().color(MUTED));
+        ui.label(RichText::new("Transistoren & Messen").strong().color(muted()));
         ui.horizontal_wrapped(|ui| {
             for t in Topic::TRANSISTORS {
                 if ui.selectable_label(self.topic == t, tutorial::doc(t).title).clicked() {
@@ -1746,7 +1763,7 @@ impl App {
             }
         });
         ui.add_space(6.0);
-        ui.label(RichText::new("Echte Bausteine (ICs)").strong().color(MUTED));
+        ui.label(RichText::new("Echte Bausteine (ICs)").strong().color(muted()));
         ui.horizontal_wrapped(|ui| {
             for t in Topic::MIXED {
                 if ui.selectable_label(self.topic == t, tutorial::doc(t).title).clicked() {
@@ -1755,7 +1772,7 @@ impl App {
             }
         });
         ui.add_space(6.0);
-        ui.label(RichText::new("Digitaltechnik").strong().color(MUTED));
+        ui.label(RichText::new("Digitaltechnik").strong().color(muted()));
         ui.horizontal_wrapped(|ui| {
             for t in Topic::DIGITAL {
                 if ui.selectable_label(self.topic == t, tutorial::doc(t).title).clicked() {
@@ -1804,7 +1821,7 @@ impl App {
             }
         }
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Zeitbasis").color(MUTED));
+            ui.label(RichText::new("Zeitbasis").color(muted()));
             let cur = TIMEBASES.iter().find(|t| t.0 == self.scope_t).map_or_else(|| fmt_si(self.scope_t, "s"), |t| t.1.to_string());
             egui::ComboBox::from_id_salt("tb")
                 .selected_text(cur)
@@ -1828,14 +1845,14 @@ impl App {
                     let (txt, col) = if s.triggered {
                         ("● getriggert", GREEN)
                     } else if self.scope_trigger {
-                        ("○ keine Flanke: Bild läuft durch", MUTED)
+                        ("○ keine Flanke: Bild läuft durch", muted())
                     } else {
-                        ("○ läuft durch", MUTED)
+                        ("○ läuft durch", muted())
                     };
                     ui.label(RichText::new(txt).color(col));
                 }
             } else {
-                ui.label(RichText::new("Ohne Kondensator, Spule oder Wechselquelle sind alle Spannungen konstant.").color(MUTED));
+                ui.label(RichText::new("Ohne Kondensator, Spule oder Wechselquelle sind alle Spannungen konstant.").color(muted()));
             }
         });
         let (scale, unit) = if self.scope_t < 1e-3 {
@@ -1847,7 +1864,7 @@ impl App {
         };
         match &self.scope {
             None => {
-                ui.label(RichText::new("Noch keine Messung.").color(MUTED));
+                ui.label(RichText::new("Noch keine Messung.").color(muted()));
             }
             Some(Err(e)) => {
                 ui.label(RichText::new(format!("⚠ {e}")).color(RED));
@@ -1855,7 +1872,9 @@ impl App {
             Some(Ok(s)) if s.traces.is_empty() => {
                 ui.add_space(20.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("Setze Messpunkte (📍) in die Schaltung, um Spannungen über die Zeit zu sehen.").size(14.0).color(MUTED));
+                    ui.label(
+                        RichText::new("Setze Messpunkte (📍) in die Schaltung, um Spannungen über die Zeit zu sehen.").size(14.0).color(muted()),
+                    );
                 });
             }
             Some(Ok(s)) => {
@@ -2014,6 +2033,7 @@ impl App {
                     }
                 }
             }
+            PalList(on) => self.pal_list = on,
             Scope(on) => self.show_scope = on,
             Tutorial(on) => self.show_tutorial = on,
             Timebase(t) => self.scope_t = t,
@@ -2135,20 +2155,35 @@ fn tile_key(kind: &PartKind) -> String {
     }
 }
 
-fn tile(ui: &mut egui::Ui, kind: &PartKind, selected: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(72.0, 62.0), Sense::click_and_drag());
-    let painter = ui.painter_at(rect);
-    let bg = if selected {
-        ACCENT.gamma_multiply(0.18)
-    } else if resp.hovered() {
-        Color32::from_gray(44)
-    } else {
-        Color32::from_gray(30)
+/// Farben der Palette: Kachelgrund, Rand, Schaltzeichen (hell oder dunkel)
+fn tile_colors(selected: bool, hovered: bool) -> (Color32, Color32, Color32) {
+    let dark = theme::is_dark();
+    let bg = match (selected, hovered, dark) {
+        (true, _, _) => ACCENT.gamma_multiply(0.18),
+        (false, true, true) => Color32::from_gray(44),
+        (false, false, true) => Color32::from_gray(30),
+        (false, true, false) => Color32::from_gray(222),
+        (false, false, false) => Color32::from_gray(238),
     };
-    painter.rect_filled(rect, 5.0, bg);
-    painter.rect_stroke(rect, 5.0, Stroke::new(1.0, if selected { ACCENT } else { Color32::from_gray(52) }), StrokeKind::Inside);
-    let icon_c = rect.center_top() + Vec2::new(0.0, 22.0);
-    let col = if selected { ACCENT } else { Color32::from_rgb(208, 211, 219) };
+    let stroke = if selected {
+        ACCENT
+    } else if dark {
+        Color32::from_gray(52)
+    } else {
+        Color32::from_gray(200)
+    };
+    let icon = if selected {
+        ACCENT
+    } else if dark {
+        Color32::from_rgb(208, 211, 219)
+    } else {
+        Color32::from_rgb(40, 44, 52)
+    };
+    (bg, stroke, icon)
+}
+
+/// Schaltzeichen eines Bauteils in einem kleinen Feld um `c` (Breite etwa 62 px bei `k` = 1).
+fn draw_icon(painter: &egui::Painter, c: egui::Pos2, kind: &PartKind, col: Color32, k: f32) {
     let (rot, s, off) = match kind.shape() {
         Shape::Source => (3, 13.0, Vec2::ZERO),
         Shape::TwoPole => (0, 14.0, Vec2::ZERO),
@@ -2163,57 +2198,161 @@ fn tile(ui: &mut egui::Ui, kind: &PartKind, selected: bool) -> egui::Response {
             (0, s, -Vec2::new((x0 + x1) * 0.5, (y0 + y1) * 0.5) * s)
         }
     };
-    let pen = symbols::Pen { painter: &painter, origin: icon_c + off, s, rot, color: col, width: 1.5 };
+    let pen = symbols::Pen { painter, origin: c + off * k, s: s * k, rot, color: col, width: 1.5 };
     if let PartKind::Probe = kind {
-        let pin = icon_c + Vec2::new(-12.0, 8.0);
-        painter.line_segment([pin, pin + Vec2::new(8.0, -8.0)], Stroke::new(1.5, ACCENT));
-        painter.circle_filled(pin, 3.0, ACCENT);
-        let r = egui::Rect::from_min_size(pin + Vec2::new(8.0, -20.0), Vec2::new(24.0, 13.0));
+        let pin = c + Vec2::new(-12.0, 8.0) * k;
+        painter.line_segment([pin, pin + Vec2::new(8.0, -8.0) * k], Stroke::new(1.5, ACCENT));
+        painter.circle_filled(pin, 3.0 * k, ACCENT);
+        let r = egui::Rect::from_min_size(pin + Vec2::new(8.0, -20.0) * k, Vec2::new(24.0, 13.0) * k);
         painter.rect_stroke(r, 2.0, Stroke::new(1.3, ACCENT), StrokeKind::Inside);
-        painter.text(r.center(), egui::Align2::CENTER_CENTER, "U", egui::FontId::proportional(10.0), Color32::WHITE);
+        painter.text(r.center(), egui::Align2::CENTER_CENTER, "U", egui::FontId::proportional(10.0 * k), Color32::WHITE);
     } else {
         symbols::draw(&pen, kind, symbols::Live::default());
     }
-    let short = match kind {
-        PartKind::DcVoltage { v } if *v == 5.0 => "5 V (Logik)",
-        PartKind::DcVoltage { .. } => "Batterie 9 V",
-        PartKind::AcVoltage { .. } => "Wechsel",
-        PartKind::SquareVoltage { .. } => "Rechteck",
-        PartKind::CurrentSource { .. } => "Strom",
-        PartKind::Lamp { .. } => "Lampe",
-        PartKind::Led { .. } => "LED",
+}
+
+/// Kurzname auf der Kachel
+fn tile_short(kind: &PartKind) -> String {
+    match kind {
+        PartKind::DcVoltage { v } if *v == 5.0 => "5 V (Logik)".into(),
+        PartKind::DcVoltage { .. } => "Batterie 9 V".into(),
+        PartKind::AcVoltage { .. } => "Wechsel".into(),
+        PartKind::SquareVoltage { .. } => "Rechteck".into(),
+        PartKind::CurrentSource { .. } => "Strom".into(),
+        PartKind::Lamp { .. } => "Lampe".into(),
+        PartKind::Led { .. } => "LED".into(),
         PartKind::Transistor { kind } => match kind.family() {
             elab_app::model::TransistorFamily::Npn => "NPN",
             elab_app::model::TransistorFamily::Pnp => "PNP",
             elab_app::model::TransistorFamily::Nmos => "N-MOS",
             elab_app::model::TransistorFamily::Pmos => "P-MOS",
-        },
-        PartKind::Potentiometer { .. } => "Poti",
-        PartKind::Ammeter => "Ampere",
-        PartKind::Gate { gate } => gate.label(),
-        PartKind::LogicInput { .. } => "Schalter",
-        PartKind::Clock { .. } => "Takt",
-        PartKind::LogicLed { .. } => "Anzeige",
-        PartKind::DFlipFlop => "D-FF",
-        PartKind::JkFlipFlop => "JK-FF",
-        PartKind::Counter4 => "Zähler",
-        PartKind::SevenSeg => "7-Segment",
-        PartKind::Adc4 => "ADC",
-        PartKind::Dac4 => "DAC",
-        other if other.is_ic() => {
-            let t = other.ic_type().unwrap_or_default();
-            painter.text(rect.center_bottom() - Vec2::new(0.0, 5.0), egui::Align2::CENTER_BOTTOM, t, egui::FontId::proportional(11.0), MUTED);
-            return resp;
         }
-        other => other.label(),
-    };
-    painter.text(rect.center_bottom() - Vec2::new(0.0, 5.0), egui::Align2::CENTER_BOTTOM, short, egui::FontId::proportional(11.0), MUTED);
+        .into(),
+        PartKind::Potentiometer { .. } => "Poti".into(),
+        PartKind::Ammeter => "Ampere".into(),
+        PartKind::Gate { gate } => gate.label().into(),
+        PartKind::LogicInput { .. } => "Schalter".into(),
+        PartKind::Clock { .. } => "Takt".into(),
+        PartKind::LogicLed { .. } => "Anzeige".into(),
+        PartKind::DFlipFlop => "D-FF".into(),
+        PartKind::JkFlipFlop => "JK-FF".into(),
+        PartKind::Counter4 => "Zähler".into(),
+        PartKind::SevenSeg => "7-Segment".into(),
+        PartKind::Adc4 => "ADC".into(),
+        PartKind::Dac4 => "DAC".into(),
+        other if other.is_ic() => other.ic_type().unwrap_or_default().to_string(),
+        other => other.label().into(),
+    }
+}
+
+/// Ein Satz zum Bauteil für die Listenansicht der Palette.
+fn blurb(kind: &PartKind) -> &'static str {
+    use elab_app::model::GateType as G;
+    match kind {
+        PartKind::DcVoltage { v } if *v == 5.0 => "Netzteil 5 V für Logik-ICs (74HC verträgt höchstens 7 V)",
+        PartKind::DcVoltage { .. } => "Gleichspannung, z. B. Batterie. Spannung im Inspektor",
+        PartKind::AcVoltage { .. } => "Sinus-Wechselspannung, z. B. 50 Hz aus dem Trafo",
+        PartKind::SquareVoltage { .. } => "Schaltet zwischen zwei Spannungen hin und her",
+        PartKind::CurrentSource { .. } => "Liefert einen festen Strom, egal wie groß die Last",
+        PartKind::Ground => "Bezugspunkt 0 V. Jede Schaltung braucht eine Masse",
+        PartKind::Resistor { .. } => "Begrenzt den Strom: U = R · I",
+        PartKind::Potentiometer { .. } => "Einstellbarer Spannungsteiler mit Schleifer",
+        PartKind::Capacitor { .. } => "Speichert Ladung, glättet und verzögert",
+        PartKind::Inductor { .. } => "Spule: wehrt sich gegen Stromänderungen",
+        PartKind::Lamp { .. } => "Glühlampe, leuchtet mit ihrer Leistung",
+        PartKind::Diode { .. } => "Lässt Strom nur in eine Richtung durch",
+        PartKind::Led { .. } => "Leuchtdiode, braucht immer einen Vorwiderstand",
+        PartKind::Transistor { kind } => match kind.family() {
+            elab_app::model::TransistorFamily::Npn => "NPN: kleiner Basisstrom schaltet großen Kollektorstrom",
+            elab_app::model::TransistorFamily::Pnp => "PNP: schaltet zur Plusseite, Basis gegen Minus ziehen",
+            elab_app::model::TransistorFamily::Nmos => "N-Kanal-MOSFET: Spannung am Gate schaltet, fast ohne Strom",
+            elab_app::model::TransistorFamily::Pmos => "P-Kanal-MOSFET: schaltet zur Plusseite",
+        },
+        PartKind::Switch { .. } => "Ein/Aus per Doppelklick",
+        PartKind::PushButton => "Leitet nur, solange er gedrückt ist",
+        PartKind::Probe => "Zeigt die Spannung gegen Masse und im Oszilloskop",
+        PartKind::Voltmeter => "Misst Spannung, wird parallel angeschlossen",
+        PartKind::Ammeter => "Misst Strom, wird in die Leitung eingefügt",
+        PartKind::Gate { gate } => match gate {
+            G::And => "1, wenn alle Eingänge 1 sind",
+            G::Or => "1, wenn mindestens ein Eingang 1 ist",
+            G::Not => "Kehrt den Pegel um",
+            G::Nand => "UND mit umgekehrtem Ausgang, universell",
+            G::Nor => "ODER mit umgekehrtem Ausgang",
+            G::Xor => "1, wenn genau ein Eingang 1 ist",
+            G::Xnor => "1, wenn beide Eingänge gleich sind",
+        },
+        PartKind::LogicInput { .. } => "Logikschalter: Klick schaltet 0/1",
+        PartKind::Button => "Logiktaster: 1, solange gedrückt",
+        PartKind::Clock { .. } => "Taktgeber, schaltet regelmäßig um",
+        PartKind::LogicHigh => "Fester Pegel 1",
+        PartKind::LogicLed { .. } => "Leuchtet bei Pegel 1",
+        PartKind::SevenSeg => "Zeigt eine Ziffer aus 4 Bit",
+        PartKind::DFlipFlop => "Merkt sich D bei der steigenden Taktflanke",
+        PartKind::JkFlipFlop => "Setzen, löschen oder umschalten im Takt",
+        PartKind::Counter4 => "Zählt Taktflanken von 0 bis 15",
+        PartKind::GateIc { .. } => "Echtes Gatter-IC mit VCC und GND, liest Spannungen",
+        PartKind::SchmittIc { .. } => "Inverter mit Hysterese, macht verrauschte Signale sauber",
+        PartKind::DffIc { .. } => "D-Flipflop als IC mit Versorgung",
+        PartKind::CounterIc { .. } => "4-Bit-Zähler als IC mit Versorgung",
+        PartKind::Timer555 => "Timer: Blinker, Taktgeber, Verzögerung",
+        PartKind::OpAmp { .. } => "Operationsverstärker: verstärkt die Differenz der Eingänge",
+        PartKind::Adc4 => "Wandelt eine Spannung in eine 4-Bit-Zahl",
+        PartKind::Dac4 => "Wandelt eine 4-Bit-Zahl in eine Spannung",
+        PartKind::Port => "Anschluss für ein eigenes IC",
+        PartKind::Custom { .. } => "Eigenes IC aus der Bibliothek",
+    }
+}
+
+fn tile(ui: &mut egui::Ui, kind: &PartKind, selected: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(72.0, 62.0), Sense::click_and_drag());
+    let painter = ui.painter_at(rect);
+    let (bg, stroke, icon) = tile_colors(selected, resp.hovered());
+    painter.rect_filled(rect, 5.0, bg);
+    painter.rect_stroke(rect, 5.0, Stroke::new(1.0, stroke), StrokeKind::Inside);
+    draw_icon(&painter, rect.center_top() + Vec2::new(0.0, 22.0), kind, icon, 1.0);
+    painter.text(
+        rect.center_bottom() - Vec2::new(0.0, 5.0),
+        egui::Align2::CENTER_BOTTOM,
+        tile_short(kind),
+        egui::FontId::proportional(11.0),
+        muted(),
+    );
+    resp
+}
+
+/// Zeile der Listenansicht: Schaltzeichen, Name und ein Satz dazu.
+fn list_row(ui: &mut egui::Ui, kind: &PartKind, selected: bool) -> egui::Response {
+    let w = ui.available_width();
+    let text_w = w - 66.0;
+    let name = egui::WidgetText::from(RichText::new(tile_short(kind)).strong().size(13.0).color(text())).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        text_w,
+        egui::TextStyle::Body,
+    );
+    let desc = egui::WidgetText::from(RichText::new(blurb(kind)).size(12.0).color(muted())).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Wrap),
+        text_w,
+        egui::TextStyle::Body,
+    );
+    let h = (name.size().y + desc.size().y + 8.0).max(42.0);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click_and_drag());
+    let (bg, stroke, icon) = tile_colors(selected, resp.hovered());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 4.0, bg);
+    painter.rect_stroke(rect, 4.0, Stroke::new(1.0, stroke), StrokeKind::Inside);
+    draw_icon(&painter, rect.left_center() + Vec2::new(30.0, 0.0), kind, icon, 0.75);
+    let x = rect.left() + 62.0;
+    painter.galley(egui::pos2(x, rect.top() + 4.0), name.clone(), text());
+    painter.galley(egui::pos2(x, rect.top() + 6.0 + name.size().y), desc, muted());
     resp
 }
 
 fn big_value(ui: &mut egui::Ui, label: &str, value: &str, col: Color32) {
     ui.horizontal(|ui| {
-        ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new(label).color(MUTED)));
+        ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new(label).color(muted())));
         ui.label(RichText::new(value).size(16.0).strong().color(col));
     });
 }
@@ -2237,6 +2376,8 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         log::frame_start();
+        let sys_dark = ctx.global_style().visuals.dark_mode;
+        theme::set_dark(sys_dark);
         self.global_keys(&ctx);
         log::activity("Netzliste und Arbeitspunkt");
         self.update_sim();
@@ -2269,8 +2410,14 @@ impl eframe::App for App {
             });
         });
         if self.show_tutorial {
-            egui::Panel::right("tutorial").resizable(true).default_size(380.0).min_size(300.0).show(ui, |ui| {
+            // Das Tutorial ist immer dunkel, mit hellem Lesetext
+            let dark = theme::dark_visuals();
+            let frame = egui::Frame::new().fill(dark.panel_fill).inner_margin(egui::Margin::symmetric(10, 8));
+            egui::Panel::right("tutorial").resizable(true).default_size(380.0).min_size(300.0).frame(frame).show(ui, |ui| {
+                theme::set_dark(true);
+                *ui.visuals_mut() = dark;
                 egui::ScrollArea::vertical().id_salt("tut").auto_shrink(false).show(ui, |ui| self.tutorial_ui(ui));
+                theme::set_dark(sys_dark);
             });
         }
         if self.show_scope {
@@ -2279,6 +2426,9 @@ impl eframe::App for App {
         }
         log::activity("Schaltplan zeichnen und bearbeiten");
         egui::CentralPanel::no_frame().show(ui, |ui| {
+            // Zeichenfläche: immer dunkel
+            theme::set_dark(true);
+            *ui.visuals_mut() = theme::dark_visuals();
             let mixed = self.msim.is_some();
             let highlight = self.lesson_highlight();
             let live = LiveData {
@@ -2309,6 +2459,7 @@ impl eframe::App for App {
                 ui.ctx().request_repaint();
             }
         });
+        theme::set_dark(sys_dark);
         // Fenstertitel
         let name = self.file.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| {
             if self.doc.title.is_empty() {

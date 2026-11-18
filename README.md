@@ -47,7 +47,10 @@ cargo test --workspace              # alle Tests (Simulator, Netzliste, Modell)
 - **Bearbeiten:** Kopieren, Ausschneiden, Einfügen (⌘/Strg + C, X, V; eingefügt wird unter
   dem Mauszeiger). Markierte Leitungen lassen sich als Ganzes verschieben, angeschlossene
   Drähte und Bauteile bleiben verbunden.
-- **Bauteilpalette** als Ziehharmonika mit Suchfeld, jedes Bauteil genau einmal.
+- **Bauteilpalette** als Ziehharmonika mit Suchfeld, jedes Bauteil genau einmal; wahlweise
+  Kacheln oder Liste mit einem Satz Beschreibung je Bauteil.
+- **Hell und dunkel:** Die Bedienleisten folgen dem System, Zeichenfläche und Tutorial sind
+  immer dunkel mit hellem Lesetext. Zum Testen: `ELAB_THEME=light` bzw. `dark`.
 - **Tutorial-Leiste** wie in nnlab: Erklärung, Formeln, übliche Werte und Experimente
   zu jedem Bauteil und zu den Grundlagen (Knoten, Masse, Ohm, Kirchhoff, Arbeitspunkt …),
   mit Live-Werten des ausgewählten Bauteils.

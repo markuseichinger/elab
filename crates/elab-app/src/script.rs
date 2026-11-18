@@ -37,6 +37,8 @@ pub enum Cmd {
     Drag(f32, f32, f32, f32),
     Key(Key, Modifiers),
     Select(String),
+    /// Palette als Liste (true) oder Kacheln
+    PalList(bool),
     /// Hauptwert eines Bauteils setzen (Widerstand, Kapazität, Spannung …), wie im Inspektor
     Value(String, f64),
     Scope(bool),
@@ -115,6 +117,7 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
             "panel" => Cmd::Panel(t.get(1).unwrap_or(&"scope").to_string()),
             // Früher Palettenreiter; paldrag klappt die Gruppe jetzt selbst auf
             "palette" => Cmd::Wait(1),
+            "palview" => Cmd::PalList(t.get(1) == Some(&"list")),
             "pause" => Cmd::Pause(on(1)),
             "saveic" => Cmd::SaveIc(t.get(1).ok_or(format!("Zeile {}: Name fehlt", ln + 1))?.to_string()),
             "quit" => Cmd::Quit,

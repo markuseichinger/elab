@@ -113,9 +113,18 @@ pub fn seven_seg(v: u8) -> [bool; 7] {
     std::array::from_fn(|k| b >> k & 1 == 1)
 }
 
+/// Füllung der Bauteilkörper: dunkel auf der Zeichenfläche, hell in einer hellen Palette
+pub fn body_color() -> Color32 {
+    if crate::theme::is_dark() {
+        Color32::from_rgb(28, 30, 36)
+    } else {
+        Color32::from_rgb(250, 250, 252)
+    }
+}
+
 /// Zeichnet das Schaltzeichen eines Bauteils (ohne Beschriftung; Messpunkte zeichnet der Editor).
 pub fn draw(pen: &Pen, kind: &PartKind, live: Live) {
-    let body_fill = Color32::from_rgb(28, 30, 36);
+    let body_fill = body_color();
     match kind {
         PartKind::Resistor { .. } => {
             pen.line((-2.0, 0.0), (-1.0, 0.0));
@@ -322,7 +331,7 @@ fn pin_label(pen: &Pen, at: (f32, f32), label: &str, size: f32, color: Color32) 
 
 /// Echte Bausteine (Reiter „ICs“): Gatter mit Versorgung, OpAmp, Kastensymbole.
 fn draw_ic(pen: &Pen, kind: &PartKind, live: &Live) {
-    let body = Color32::from_rgb(26, 30, 40);
+    let body = if crate::theme::is_dark() { Color32::from_rgb(26, 30, 40) } else { body_color() };
     let txt = Color32::from_rgb(220, 222, 230);
     let dim = Color32::from_rgb(150, 156, 170);
     let pin = |k: usize| live.pins.get(k).copied().flatten();
@@ -456,7 +465,7 @@ const ACCENT_IC: Color32 = Color32::from_rgb(255, 170, 70);
 
 /// IEC-Schaltzeichen der Digitalbausteine.
 fn draw_digital(pen: &Pen, kind: &PartKind, live: &Live) {
-    let body = Color32::from_rgb(28, 30, 36);
+    let body = body_color();
     let pin = |k: usize| live.pins.get(k).copied().flatten();
     let txt = Color32::from_rgb(220, 222, 230);
     match kind {
@@ -620,7 +629,7 @@ fn diode(pen: &Pen, fill: Color32) {
 fn source_circle(pen: &Pen) {
     pen.line((0.0, -2.0), (0.0, -0.9));
     pen.line((0.0, 0.9), (0.0, 2.0));
-    pen.disc((0.0, 0.0), 0.9, Color32::from_rgb(28, 30, 36));
+    pen.disc((0.0, 0.0), 0.9, body_color());
     pen.circle((0.0, 0.0), 0.9);
 }
 

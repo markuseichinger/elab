@@ -4,7 +4,7 @@
 
 use crate::theme::*;
 use crate::App;
-use egui::{Color32, RichText};
+use egui::RichText;
 use elab_app::model::{Document, PartKind};
 use elab_app::netlist::PinSrc;
 use elab_app::sim;
@@ -124,26 +124,22 @@ impl App {
         let now = ui.input(|i| i.time);
         ui.label(RichText::new("✔ Echtzeit").color(GREEN).strong());
         // Uhr und Bedienung in einem festen Kasten: nichts verrutscht, wenn die Zeit wächst
-        let mut restart = false;
-        egui::Frame::new().fill(Color32::from_rgb(24, 27, 34)).corner_radius(4.0).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let txt = if t < 1.0 { format!("t = {:>7.2} ms", t * 1e3) } else { format!("t = {:>7.3} s ", t) };
-                ui.add_sized([118.0, 18.0], egui::Label::new(RichText::new(txt).color(Color32::WHITE).monospace()));
-                let label = if self.dig_paused { "▶" } else { "⏸" };
-                let tip = if self.dig_paused { "Weiter" } else { "Anhalten" };
-                if ui.add_sized([24.0, 18.0], egui::Button::new(label).small()).on_hover_text(tip).clicked() {
-                    self.dig_paused = !self.dig_paused;
-                }
-                restart = ui
-                    .add_sized([24.0, 18.0], egui::Button::new("↺").small())
-                    .on_hover_text("Neu einschalten (Kondensatoren leer, Flipflops auf 0)")
-                    .clicked();
-                ui.label(RichText::new("Tempo").color(MUTED));
-                ui.add(egui::Slider::new(&mut self.dig_speed, 0.001..=4.0).logarithmic(true).show_value(false))
-                    .on_hover_text("Tempo: 1× ist Echtzeit. Kleiner: Zeitlupe, um schnelle Vorgänge zu sehen.");
-                ui.add_sized([52.0, 18.0], egui::Label::new(RichText::new(format!("{:.3}×", self.dig_speed)).monospace()));
-            });
-        });
+        // Uhr mit fester Breite, Bedienung daneben: nichts verrutscht, wenn die Zeit wächst
+        let txt = if t < 1.0 { format!("t = {:>7.2} ms", t * 1e3) } else { format!("t = {:>7.3} s ", t) };
+        ui.add_sized([118.0, 18.0], egui::Label::new(RichText::new(txt).monospace()));
+        let label = if self.dig_paused { "▶" } else { "⏸" };
+        let tip = if self.dig_paused { "Weiter" } else { "Anhalten" };
+        if ui.add_sized([26.0, 18.0], egui::Button::new(label).small()).on_hover_text(tip).clicked() {
+            self.dig_paused = !self.dig_paused;
+        }
+        let restart = ui
+            .add_sized([26.0, 18.0], egui::Button::new("↺").small())
+            .on_hover_text("Neu einschalten (Kondensatoren leer, Flipflops auf 0)")
+            .clicked();
+        ui.label(RichText::new("Tempo").color(muted()));
+        ui.add(egui::Slider::new(&mut self.dig_speed, 0.001..=4.0).logarithmic(true).show_value(false))
+            .on_hover_text("Tempo: 1× ist Echtzeit. Kleiner: Zeitlupe, um schnelle Vorgänge zu sehen.");
+        ui.add_sized([52.0, 18.0], egui::Label::new(RichText::new(format!("{:.3}×", self.dig_speed)).monospace()));
         // „Langsamer als Echtzeit“ nicht bei jedem einzelnen Bild an- und ausschalten
         if self.msim_lag && !self.dig_paused {
             self.lag_seen = now;

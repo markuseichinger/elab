@@ -195,7 +195,7 @@ impl App {
                         } else if is_cur {
                             ("▶", ACCENT)
                         } else {
-                            ("○", MUTED)
+                            ("○", muted())
                         };
                         ui.label(RichText::new(format!("{icon} {}. {}", i + 1, s.title)).color(col).strong());
                         if is_cur {
@@ -216,7 +216,7 @@ impl App {
                                     }
                                 }
                                 if !s.pins.is_empty() {
-                                    ui.label(RichText::new("Die betroffenen Anschlüsse blinken im Schaltplan.").small().color(MUTED));
+                                    ui.label(RichText::new("Die betroffenen Anschlüsse blinken im Schaltplan.").small().color(muted()));
                                 }
                                 if run.lesson.task {
                                     if !run.tips.contains(&i) && ui.small_button("💡 Tipp").clicked() {
@@ -231,7 +231,7 @@ impl App {
                             if let Some(nl) = nl {
                                 let ctx = Ctx { doc, nl, op: self.op.as_ref().ok(), anchor: run.anchor, scope_open: self.show_scope };
                                 if let Some(l) = (s.live)(&ctx) {
-                                    ui.label(RichText::new(format!("    {l}")).small().monospace().color(MUTED));
+                                    ui.label(RichText::new(format!("    {l}")).small().monospace().color(muted()));
                                 }
                             }
                         }

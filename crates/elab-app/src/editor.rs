@@ -985,16 +985,16 @@ impl Editor {
         let name_col = Color32::from_rgb(228, 230, 236);
         let lh = font.size * 1.15;
         if dy < -0.1 {
-            painter.text(at, Align2::CENTER_BOTTOM, &value, font.clone(), MUTED);
+            painter.text(at, Align2::CENTER_BOTTOM, &value, font.clone(), muted());
             painter.text(at - Vec2::new(0.0, lh), Align2::CENTER_BOTTOM, name, font.clone(), name_col);
         } else if dy > 0.1 {
             painter.text(at, Align2::CENTER_TOP, name, font.clone(), name_col);
-            painter.text(at + Vec2::new(0.0, lh), Align2::CENTER_TOP, &value, font.clone(), MUTED);
+            painter.text(at + Vec2::new(0.0, lh), Align2::CENTER_TOP, &value, font.clone(), muted());
         } else {
             let al = if dx > 0.0 { Align2::LEFT_BOTTOM } else { Align2::RIGHT_BOTTOM };
             let al2 = if dx > 0.0 { Align2::LEFT_TOP } else { Align2::RIGHT_TOP };
             painter.text(at, al, name, font.clone(), name_col);
-            painter.text(at, al2, &value, font.clone(), MUTED);
+            painter.text(at, al2, &value, font.clone(), muted());
         }
     }
 
@@ -1011,7 +1011,7 @@ impl Editor {
         let (x0, y0, x1, y1) = part.bbox();
         let fs = (s * 0.75).clamp(11.0, 22.0);
         let g = painter.layout_no_wrap(text, FontId::monospace(fs), Color32::from_rgb(140, 230, 255));
-        let name = painter.layout_no_wrap(part.name.clone(), FontId::proportional((fs * 0.6).max(9.0)), MUTED);
+        let name = painter.layout_no_wrap(part.name.clone(), FontId::proportional((fs * 0.6).max(9.0)), muted());
         let w = g.size().x.max(name.size().x) + 14.0;
         let h = g.size().y + name.size().y + 8.0;
         // Über dem Symbol, bei senkrechter Lage rechts daneben
@@ -1033,7 +1033,7 @@ impl Editor {
         painter.rect_filled(rect, 4.0, Color32::from_rgb(14, 26, 30));
         painter.rect_stroke(rect, 4.0, Stroke::new(1.2, Color32::from_rgb(60, 110, 125)), StrokeKind::Inside);
         let nh = name.size().y;
-        painter.galley(rect.min + Vec2::new(7.0, 3.0), name, MUTED);
+        painter.galley(rect.min + Vec2::new(7.0, 3.0), name, muted());
         painter.galley(rect.min + Vec2::new(7.0, 4.0 + nh), g, Color32::WHITE);
     }
 
@@ -1071,7 +1071,7 @@ impl Editor {
             Align2::LEFT_BOTTOM,
             format!("{hint}   ·   {:.0} %{pos}", self.zoom * 100.0),
             FontId::proportional(12.0),
-            MUTED,
+            muted(),
         );
 
         // Farblegende unten rechts
@@ -1086,9 +1086,9 @@ impl Editor {
                     painter.line_segment([Pos2::new(x, base.y), Pos2::new(x, base.y + 8.0)], Stroke::new(w / 40.0 + 0.6, volt_color(t * vmax, vmax)));
                 }
                 let f = FontId::proportional(11.0);
-                painter.text(base + Vec2::new(0.0, -3.0), Align2::LEFT_BOTTOM, fmt_si(-vmax, "V"), f.clone(), MUTED);
-                painter.text(base + Vec2::new(w * 0.5, -3.0), Align2::CENTER_BOTTOM, "0 V", f.clone(), MUTED);
-                painter.text(base + Vec2::new(w, -3.0), Align2::RIGHT_BOTTOM, fmt_si(vmax, "V"), f, MUTED);
+                painter.text(base + Vec2::new(0.0, -3.0), Align2::LEFT_BOTTOM, fmt_si(-vmax, "V"), f.clone(), muted());
+                painter.text(base + Vec2::new(w * 0.5, -3.0), Align2::CENTER_BOTTOM, "0 V", f.clone(), muted());
+                painter.text(base + Vec2::new(w, -3.0), Align2::RIGHT_BOTTOM, fmt_si(vmax, "V"), f, muted());
             }
         }
 
@@ -1104,7 +1104,7 @@ impl Editor {
                 let Some(part) = doc.part(id) else { return };
                 lines.push((format!("{} · {}", part.name, part.kind.label()), Color32::WHITE, true));
                 if part.kind.has_value() {
-                    lines.push((part.kind.value_text(), MUTED, false));
+                    lines.push((part.kind.value_text(), muted(), false));
                 }
                 if part.broken {
                     lines.push(("Durchgebrannt: leitet nicht mehr. Im Inspektor ersetzen.".into(), RED, false));
@@ -1124,7 +1124,7 @@ impl Editor {
                     }
                     lines.push((l, BLUE, false));
                     if self.tool == Tool::Select {
-                        lines.push(("Ziehen, um einen Draht zu verlegen".into(), MUTED, false));
+                        lines.push(("Ziehen, um einen Draht zu verlegen".into(), muted(), false));
                     }
                 } else if let (Some(v), PartKind::Transistor { kind }) = (live.op.and_then(|o| o.parts.get(&id)), &part.kind) {
                     let bjt = kind.is_bjt();
@@ -1139,7 +1139,7 @@ impl Editor {
                     if bjt {
                         lines.push((format!("{ic} = {}   {io} = {}", fmt_si(v.ctrl_i, "A"), fmt_si(v.i, "A")), BLUE, false));
                         if v.ctrl_i.abs() > 1e-12 && v.i.abs() > 1e-12 {
-                            lines.push((format!("I_C / I_B = {:.0}", v.i / v.ctrl_i), MUTED, false));
+                            lines.push((format!("I_C / I_B = {:.0}", v.i / v.ctrl_i), muted(), false));
                         }
                     } else {
                         lines.push((format!("{io} = {}   (Gate stromlos)", fmt_si(v.i, "A")), BLUE, false));
@@ -1151,7 +1151,7 @@ impl Editor {
                 } else if let (Some(v), PartKind::Potentiometer { .. }) = (live.op.and_then(|o| o.parts.get(&id)), &part.kind) {
                     lines.push((format!("U_AB = {}   U_SB = {}", fmt_si(v.u, "V"), fmt_si(v.ctrl_u, "V")), ACCENT, false));
                     lines.push((format!("I_A = {}   I_Schleifer = {}", fmt_si(v.i, "A"), fmt_si(v.ctrl_i, "A")), BLUE, false));
-                    lines.push(("Wenn ausgewählt: ← / → verstellt den Schleifer".into(), MUTED, false));
+                    lines.push(("Wenn ausgewählt: ← / → verstellt den Schleifer".into(), muted(), false));
                 } else if let (Some(v), PartKind::OpAmp { .. }) = (live.op.and_then(|o| o.parts.get(&id)), &part.kind) {
                     lines.push((format!("U_aus = {}   U₊ − U₋ = {}", fmt_si(v.u, "V"), fmt_si(v.ctrl_u, "V")), ACCENT, false));
                     lines.push((format!("I_aus = {}", fmt_si(v.i, "A")), BLUE, false));
@@ -1174,10 +1174,10 @@ impl Editor {
                     }
                 } else if let (Some(v), PartKind::Voltmeter) = (live.op.and_then(|o| o.parts.get(&id)), &part.kind) {
                     lines.push((format!("U = {} (+ gegen −)", fmt_si(v.u, "V")), ACCENT, false));
-                    lines.push(("Misst parallel, belastet die Schaltung nicht".into(), MUTED, false));
+                    lines.push(("Misst parallel, belastet die Schaltung nicht".into(), muted(), false));
                 } else if let (Some(v), PartKind::Ammeter) = (live.op.and_then(|o| o.parts.get(&id)), &part.kind) {
                     lines.push((format!("I = {} (von + nach −)", fmt_si(v.i, "A")), BLUE, false));
-                    lines.push(("Misst in Reihe, Innenwiderstand 0 Ω".into(), MUTED, false));
+                    lines.push(("Misst in Reihe, Innenwiderstand 0 Ω".into(), muted(), false));
                 } else if let Some(v) = live.op.and_then(|o| o.parts.get(&id)) {
                     lines.push((format!("U = {}", fmt_si(v.u, "V")), ACCENT, false));
                     lines.push((format!("I = {}", fmt_si(v.i, "A")), BLUE, false));
@@ -1194,10 +1194,10 @@ impl Editor {
                             } else {
                                 "leitet kaum"
                             };
-                            lines.push((format!("Diode {state}"), MUTED, false));
+                            lines.push((format!("Diode {state}"), muted(), false));
                         }
                         PartKind::Resistor { .. } if v.i.abs() > 1e-12 => {
-                            lines.push((format!("U / I = {}", fmt_si(v.u / v.i, "Ω")), MUTED, false));
+                            lines.push((format!("U / I = {}", fmt_si(v.u / v.i, "Ω")), muted(), false));
                         }
                         _ => {}
                     }
@@ -1220,7 +1220,7 @@ impl Editor {
                     }
                 }
                 if let PartKind::Switch { .. } = part.kind {
-                    lines.push(("Doppelklick: umschalten".into(), MUTED, false));
+                    lines.push(("Doppelklick: umschalten".into(), muted(), false));
                 }
                 if part.kind.is_digital() {
                     if let (Some(nl), Some(_)) = (live.nl, live.logic) {
@@ -1234,8 +1234,8 @@ impl Editor {
                         lines.push((vals.join("  ·  "), symbols::logic_color(Logic::L1), false));
                     }
                     match part.kind {
-                        PartKind::LogicInput { .. } => lines.push(("Klick: umschalten".into(), MUTED, false)),
-                        PartKind::Button => lines.push(("Gedrückt halten: 1".into(), MUTED, false)),
+                        PartKind::LogicInput { .. } => lines.push(("Klick: umschalten".into(), muted(), false)),
+                        PartKind::Button => lines.push(("Gedrückt halten: 1".into(), muted(), false)),
                         _ => {}
                     }
                 }

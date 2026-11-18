@@ -104,7 +104,9 @@ impl App {
             _ => {
                 ui.add_space(20.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("Die Schaltung enthält keine Digitalbausteine. Sie stehen in der Palette unter „Digital“.").color(MUTED));
+                    ui.label(
+                        RichText::new("Die Schaltung enthält keine Digitalbausteine. Sie stehen in der Palette unter „Digital“.").color(muted()),
+                    );
                 });
             }
         }
@@ -118,10 +120,10 @@ impl App {
             if ui.button(RichText::new(label).size(14.0)).on_hover_text("Digitalsimulation anhalten / fortsetzen").clicked() {
                 self.dig_paused = !self.dig_paused;
             }
-            ui.label(RichText::new("🐢 Zeitlupe").color(MUTED));
+            ui.label(RichText::new("🐢 Zeitlupe").color(muted()));
             ui.add(egui::Slider::new(&mut self.dig_speed, 0.05..=4.0).logarithmic(true).custom_formatter(|v, _| format!("{v:.2}×")))
                 .on_hover_text("1× = Echtzeit. Kleiner: langsamer, größer: schneller.");
-            ui.label(RichText::new("Fenster").color(MUTED));
+            ui.label(RichText::new("Fenster").color(muted()));
             let cur = WINDOWS.iter().find(|w| w.0 == self.an_window).map_or("?", |w| w.1);
             egui::ComboBox::from_id_salt("anw").selected_text(cur).show_ui(ui, |ui| {
                 for (w, name) in WINDOWS {
@@ -129,7 +131,7 @@ impl App {
                 }
             });
             if let Some(ds) = &self.dsim {
-                ui.label(RichText::new(format!("t = {}", fmt_si(ds.time as f64 * 1e-9, "s"))).color(MUTED));
+                ui.label(RichText::new(format!("t = {}", fmt_si(ds.time as f64 * 1e-9, "s"))).color(muted()));
                 if ds.overloaded {
                     ui.label(RichText::new("⚠ Dauerschwingung: Die Schaltung kommt nicht zur Ruhe").color(RED));
                 }
@@ -139,7 +141,7 @@ impl App {
         if rows.is_empty() {
             ui.add_space(16.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new("Schalter, Taster, Takte, Logik-Anzeigen und Messpunkte erscheinen hier als Zeilen.").color(MUTED));
+                ui.label(RichText::new("Schalter, Taster, Takte, Logik-Anzeigen und Messpunkte erscheinen hier als Zeilen.").color(muted()));
             });
             return;
         }
@@ -151,6 +153,9 @@ impl App {
             let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::hover());
             let p = ui.painter_at(rect);
             p.rect_filled(rect, 4.0, CANVAS_BG);
+            // Der Analysator ist dunkel wie die Zeichenfläche
+            let was_dark = crate::theme::is_dark();
+            crate::theme::set_dark(true);
             let now = ds.time as f64 * 1e-9;
             let t0 = now - self.an_window;
             let plot = Rect::from_min_max(rect.min + Vec2::new(label_w, 4.0), rect.max - Vec2::new(8.0, 18.0));
@@ -167,7 +172,7 @@ impl App {
             while tick <= now + 1e-9 {
                 let x = x_of(tick);
                 p.line_segment([Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())], Stroke::new(1.0, Color32::from_gray(32)));
-                p.text(Pos2::new(x, plot.bottom() + 3.0), Align2::CENTER_TOP, fmt_si(tick, "s"), FontId::proportional(10.5), MUTED);
+                p.text(Pos2::new(x, plot.bottom() + 3.0), Align2::CENTER_TOP, fmt_si(tick, "s"), FontId::proportional(10.5), muted());
                 tick += step;
             }
             for (k, (name, net)) in rows.iter().enumerate() {
@@ -219,6 +224,7 @@ impl App {
                 }
                 p.line_segment([Pos2::new(plot.left(), top + row_h), Pos2::new(plot.right(), top + row_h)], Stroke::new(1.0, Color32::from_gray(28)));
             }
+            crate::theme::set_dark(was_dark);
         });
     }
 
@@ -232,7 +238,7 @@ impl App {
         let tt = match tt {
             Err(e) => {
                 ui.add_space(12.0);
-                ui.label(RichText::new(e.as_str()).color(MUTED).size(14.0));
+                ui.label(RichText::new(e.as_str()).color(muted()).size(14.0));
                 return;
             }
             Ok(t) => t.clone(),
@@ -247,7 +253,7 @@ impl App {
                 _ => false,
             })
             .collect();
-        ui.label(RichText::new("Klick auf eine Zeile stellt die Logikschalter entsprechend ein.").small().color(MUTED));
+        ui.label(RichText::new("Klick auf eine Zeile stellt die Logikschalter entsprechend ein.").small().color(muted()));
         let mono = |s: &str, c: Color32| (s.to_string(), c);
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             let mut job = LayoutJob::default();
@@ -257,22 +263,22 @@ impl App {
             let width = |s: &str| s.chars().count().max(1);
             let cols: Vec<usize> = tt.inputs.iter().chain(&tt.outputs).map(|n| width(n).max(1)).collect();
             for (k, n) in tt.inputs.iter().enumerate() {
-                push(&mut job, mono(&format!(" {:^w$} ", n, w = cols[k]), Color32::WHITE));
+                push(&mut job, mono(&format!(" {:^w$} ", n, w = cols[k]), text()));
             }
-            push(&mut job, mono(" │ ", MUTED));
+            push(&mut job, mono(" │ ", muted()));
             for (k, n) in tt.outputs.iter().enumerate() {
-                push(&mut job, mono(&format!(" {:^w$} ", n, w = cols[tt.inputs.len() + k]), GREEN));
+                push(&mut job, mono(&format!(" {:^w$} ", n, w = cols[tt.inputs.len() + k]), table_color(Logic::L1)));
             }
             ui.label(job);
             let mut clicked: Option<Vec<bool>> = None;
             for (bits, outs, ok) in &tt.rows {
                 let mut job = LayoutJob::default();
                 for (k, b) in bits.iter().enumerate() {
-                    push(&mut job, mono(&format!(" {:^w$} ", if *b { "1" } else { "0" }, w = cols[k]), Color32::from_gray(220)));
+                    push(&mut job, mono(&format!(" {:^w$} ", if *b { "1" } else { "0" }, w = cols[k]), text()));
                 }
-                push(&mut job, mono(" │ ", MUTED));
+                push(&mut job, mono(" │ ", muted()));
                 for (k, v) in outs.iter().enumerate() {
-                    push(&mut job, mono(&format!(" {:^w$} ", v.symbol(), w = cols[tt.inputs.len() + k]), logic_color(*v).gamma_multiply(1.3)));
+                    push(&mut job, mono(&format!(" {:^w$} ", v.symbol(), w = cols[tt.inputs.len() + k]), table_color(*v)));
                 }
                 if !ok {
                     push(&mut job, mono("  schwingt", RED));
@@ -291,5 +297,18 @@ impl App {
                 }
             }
         });
+    }
+}
+
+/// Pegelfarben der Wahrheitstabelle, auf hellem Grund kräftiger
+fn table_color(v: Logic) -> Color32 {
+    if crate::theme::is_dark() {
+        return logic_color(v).gamma_multiply(1.3);
+    }
+    match v {
+        Logic::L1 => Color32::from_rgb(30, 135, 50),
+        Logic::L0 => Color32::from_rgb(70, 75, 88),
+        Logic::X => Color32::from_rgb(200, 50, 40),
+        Logic::Z => Color32::from_rgb(110, 80, 200),
     }
 }
