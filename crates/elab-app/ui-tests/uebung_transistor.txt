@@ -1,0 +1,62 @@
+# Geführte Übung „NPN-Transistor als Schalter“: Übung am gesetzten Transistor
+# starten und die Schaltung Schritt für Schritt aufbauen. Nach jedem Schritt
+# zeigt der Dump, bei welchem Schritt die Übung steht.
+# Aufruf: cargo run --release -- --script crates/elab-app/ui-tests/uebung_transistor.txt
+
+wait 10
+cmd N
+wait 3
+paldrag Gleichspannung -4 0
+paldrag NPN-Transistor 12 0
+wait 3
+select T1
+lesson start
+wait 5
+dump ui-out/l_start.json
+# Schritt 1: Masse an den Minuspol
+paldrag Masse -4 6
+tool wire
+click -4 2
+click -4 6
+wait 5
+dump ui-out/l_1.json
+# Schritt 2: Emitter an Masse
+tool wire
+click 13 2
+click 13 6
+click -4 6
+wait 5
+dump ui-out/l_2.json
+# Schritt 3: Plus-Schiene, Kollektor über Widerstand und LED
+tool wire
+click 13 -2
+click 13 -10
+click -4 -10
+click -4 -2
+tool select
+paldrag Widerstand 13 -8
+paldrag Leuchtdiode 13 -4
+wait 5
+dump ui-out/l_3.json
+# Schritt 4: Basiswiderstand und Taster
+tool wire
+click 10 0
+click 4 0
+click 4 -10
+tool select
+paldrag Widerstand 4 -3
+paldrag Taster 4 -8
+wait 5
+dump ui-out/l_4.json
+fit
+wait 3
+shot ui-out/l_4.ppm
+# Schritt 5 und 6: einschalten, ausschalten
+hold 4 -8
+wait 8
+dump ui-out/l_5.json
+release
+wait 8
+dump ui-out/l_6.json
+shot ui-out/l_6.ppm
+quit

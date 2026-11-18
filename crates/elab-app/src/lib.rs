@@ -3,6 +3,7 @@
 //! Die Oberfläche (`main.rs`) baut darauf auf; alles hier ist ohne GUI testbar.
 
 pub mod examples;
+pub mod lessons;
 pub mod model;
 pub mod netlist;
 pub mod sim;

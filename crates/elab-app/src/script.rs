@@ -18,7 +18,10 @@ use std::collections::VecDeque;
 
 #[derive(Clone, Debug)]
 pub enum Cmd {
-    Example(usize),
+    /// Beispiel nach Nummer oder Titelanfang
+    Example(String),
+    /// Geführte Übung: start, stop, skip
+    Lesson(String),
     Tool(String),
     Move(f32, f32),
     Click(f32, f32, Modifiers),
@@ -72,7 +75,8 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
         };
         let on = |i: usize| t.get(i).is_some_and(|s| *s == "on");
         out.push(match t[0] {
-            "example" => Cmd::Example(f(1)? as usize),
+            "example" => Cmd::Example(t[1..].join(" ")),
+            "lesson" => Cmd::Lesson(t.get(1).copied().unwrap_or("start").to_string()),
             "tool" => Cmd::Tool(t.get(1).unwrap_or(&"select").to_string()),
             "move" => Cmd::Move(f(1)?, f(2)?),
             "click" => Cmd::Click(f(1)?, f(2)?, Modifiers::NONE),

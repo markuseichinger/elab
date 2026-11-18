@@ -46,6 +46,8 @@ pub struct Out {
     pub changed: bool,
     /// Ein Bauteil wurde angeklickt/platziert: passendes Tutorial-Thema zeigen.
     pub focus: Option<PartKind>,
+    /// Ein Bauteil wurde neu gesetzt
+    pub placed: Option<u32>,
     /// Logikschalter umgelegt
     pub toggle: Option<u32>,
     /// Taster wird gerade gedrückt gehalten
@@ -99,6 +101,8 @@ pub struct LiveData<'a> {
     pub pin_logic: Option<&'a HashMap<u32, Vec<Option<Logic>>>>,
     /// Gedrückte Taster
     pub pressed: &'a HashSet<u32>,
+    /// Rasterpunkte, die pulsierend markiert werden (geführte Übung)
+    pub highlight: &'a [P],
 }
 
 impl LiveData<'_> {
@@ -276,6 +280,7 @@ impl Editor {
         self.tool = Tool::Select;
         out.changed = true;
         out.focus = Some(kind);
+        out.placed = Some(id);
     }
 
     fn rotate_selection(&mut self, doc: &mut Document, hist: &mut History) -> bool {
@@ -490,6 +495,19 @@ impl Editor {
             _ => None,
         };
         self.paint(&painter, r, doc, live, gs, ghost);
+        if !live.highlight.is_empty() {
+            // Geführte Übung: Anschlüsse, um die es gerade geht, pulsieren
+            let t = ui.input(|i| i.time) as f32;
+            let k = 0.5 + 0.5 * (t * 4.0).sin();
+            let s = self.s();
+            for p in live.highlight {
+                let c = self.to_screen(r, p.x as f32, p.y as f32);
+                let rad = s * (0.45 + 0.25 * k);
+                painter.circle_stroke(c, rad, Stroke::new(2.5, Color32::from_rgba_unmultiplied(255, 170, 40, (120.0 + 135.0 * k) as u8)));
+                painter.circle_filled(c, s * 0.18, Color32::from_rgb(255, 170, 40));
+            }
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(30));
+        }
         self.paint_overlay(&painter, r, doc, live, pointer, gs);
 
         // Mauszeiger

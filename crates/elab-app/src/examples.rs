@@ -5,12 +5,26 @@ use crate::model::{DiodeType, Document, GateType as G, LedColor, LogicFamily as 
 /// Eine Beispielschaltung mit Beschreibung und passender Oszilloskop-Zeitbasis.
 pub struct Example {
     pub title: &'static str,
+    /// Themengruppe im Menü (siehe [`CATEGORIES`])
+    pub category: &'static str,
     pub summary: &'static str,
     pub scope_t: f64,
     pub doc: Document,
     /// Digitalschaltung (Palette und Messgeräte passend umschalten)
     pub digital: bool,
 }
+
+/// Themengruppen der Beispiele in Menü-Reihenfolge: (Name, Beschreibung).
+pub const CATEGORIES: [(&str, &str); 8] = [
+    ("Grundlagen", "Stromkreis, Ohmsches Gesetz, Reihen- und Parallelschaltung"),
+    ("Kondensator, Spule, Diode", "Zeitverhalten, Schwingkreis, Gleichrichter"),
+    ("Transistoren", "Bipolartransistor und MOSFET als Schalter und Verstärker"),
+    ("Logik aus Transistoren", "Wie aus Transistoren Logikgatter werden"),
+    ("Logikgatter", "Ideale Gatter, Rechnen mit Bits, eigene ICs"),
+    ("Speicher & Zähler", "Flipflops, Takt, Zähler"),
+    ("Logik-ICs mit Versorgung", "Echte 74HC/74HCT-Bausteine: Pegel, Schwellen, Hysterese"),
+    ("Timer, OpAmp & Wandler", "NE555, Operationsverstärker, ADC und DAC"),
+];
 
 impl Example {
     /// Enthält das Beispiel echte Bausteine mit Versorgung?
@@ -65,9 +79,10 @@ pub fn half_adder_ic() -> Document {
 }
 
 pub fn all() -> Vec<Example> {
-    vec![
+    let mut v = vec![
         Example {
             title: "Spannungsteiler",
+            category: "Grundlagen",
             summary: "Zwei Widerstände teilen 9 V im Verhältnis 1 : 2. Ändere R2 und beobachte U_aus.",
             scope_t: 10e-3,
             digital: false,
@@ -85,6 +100,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "LED mit Vorwiderstand",
+            category: "Grundlagen",
             summary: "Der Vorwiderstand begrenzt den Strom auf etwa 15 mA. Öffne den Schalter per Doppelklick.",
             scope_t: 10e-3,
             digital: false,
@@ -103,6 +119,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "RC-Tiefpass am Rechteck",
+            category: "Kondensator, Spule, Diode",
             summary: "Der Kondensator lädt und entlädt sich mit τ = R·C = 0,1 ms. Im Oszilloskop siehst du die e-Funktion.",
             scope_t: 3e-3,
             digital: false,
@@ -120,6 +137,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "Einweggleichrichter",
+            category: "Kondensator, Spule, Diode",
             summary: "Die Diode lässt nur die positive Halbwelle durch, der Kondensator glättet. Vergleiche Eingang und Ausgang.",
             scope_t: 0.1,
             digital: false,
@@ -140,6 +158,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "Reihenschwingkreis",
+            category: "Kondensator, Spule, Diode",
             summary: "Bei jedem Sprung schwingt der Kreis mit f₀ = 1/(2π√LC) ≈ 5 kHz und klingt durch R ab.",
             scope_t: 3e-3,
             digital: false,
@@ -159,6 +178,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "Glühlampen parallel",
+            category: "Grundlagen",
             summary: "Zwei 12-V-Lampen hängen parallel an der Batterie. Jede bekommt die volle Spannung; Ströme addieren sich.",
             scope_t: 10e-3,
             digital: false,
@@ -178,6 +198,7 @@ pub fn all() -> Vec<Example> {
         // ---------------- Transistoren und Messen ----------------
         Example {
             title: "Transistor als Schalter",
+            category: "Transistoren",
             summary: "Halte den Taster gedrückt: Ein kleiner Basisstrom (I_B) schaltet den 25-mal größeren LED-Strom (I_C).",
             scope_t: 10e-3,
             digital: false,
@@ -200,6 +221,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "CMOS-Inverter: echte Logikpegel",
+            category: "Logik aus Transistoren",
             summary: "Ein NICHT-Gatter aus zwei MOSFETs. Stell das Poti von 0 bis 100 %: Wo kippt der Ausgang, wann fließt Querstrom?",
             scope_t: 10e-3,
             digital: false,
@@ -230,6 +252,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "NAND-Gatter aus Transistoren",
+            category: "Logik aus Transistoren",
             summary: "Vier MOSFETs bilden ein NAND: Nur wenn A und B auf 5 V liegen, zieht die Reihenschaltung unten den Ausgang auf 0 V. Schalter per Doppelklick.",
             scope_t: 10e-3,
             digital: false,
@@ -274,6 +297,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "Emitterschaltung (Verstärker)",
+            category: "Transistoren",
             summary: "Ein Transistor verstärkt 0,5 V Wechselspannung etwa 4,6-fach und dreht die Phase um. Verstärkung ≈ R_C / R_E.",
             scope_t: 3e-3,
             digital: false,
@@ -307,6 +331,7 @@ pub fn all() -> Vec<Example> {
         // ---------------- Digitaltechnik ----------------
         Example {
             title: "Logikgatter UND, ODER, XOR",
+            category: "Logikgatter",
             summary: "Zwei Schalter A und B steuern drei Gatter. Klicke auf die Schalter und vergleiche mit der Wahrheitstabelle.",
             scope_t: 10e-3,
             digital: true,
@@ -336,6 +361,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "Halbaddierer",
+            category: "Logikgatter",
             summary: "Addiert zwei Bits: Summe = A XOR B, Übertrag = A UND B. Die Wahrheitstabelle zeigt 1 + 1 = 10 (binär).",
             scope_t: 10e-3,
             digital: true,
@@ -360,6 +386,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "RS-Flipflop aus NOR-Gattern",
+            category: "Speicher & Zähler",
             summary: "Zwei rückgekoppelte NOR-Gatter speichern ein Bit. Taster S setzt, Taster R setzt zurück, der Zustand bleibt.",
             scope_t: 10e-3,
             digital: true,
@@ -380,6 +407,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "Frequenzteiler mit D-Flipflops",
+            category: "Speicher & Zähler",
             summary: "Jedes D-Flipflop mit /Q → D halbiert die Frequenz. Im Logikanalysator: Takt, Q1 halb so schnell, Q2 ein Viertel.",
             scope_t: 10e-3,
             digital: true,
@@ -399,6 +427,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "Zähler mit 7-Segment-Anzeige",
+            category: "Speicher & Zähler",
             summary: "Ein 4-Bit-Zähler zählt die Takte von 0 bis F, die Anzeige zeigt den Stand hexadezimal. Reset-Taster setzt auf 0.",
             scope_t: 10e-3,
             digital: true,
@@ -425,6 +454,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "Volladdierer aus Halbaddierer-ICs",
+            category: "Logikgatter",
             summary: "Ein eigenes IC „Halbaddierer“ (XOR und UND) wird zweimal eingesetzt, ein ODER verknüpft die Überträge. \
                       Schalte A, B und C_ein. „Innenschaltung öffnen“ im Inspektor zeigt den Inhalt des ICs.",
             scope_t: 10e-3,
@@ -452,9 +482,66 @@ pub fn all() -> Vec<Example> {
                     .done()
             },
         },
+        Example {
+            title: "Brückengleichrichter mit Glättung",
+            category: "Kondensator, Spule, Diode",
+            summary: "Vier Dioden machen aus Wechselspannung eine pulsierende Gleichspannung, der Kondensator glättet sie. \
+                      Im Oszilloskop: kleine Restwelligkeit am Ausgang. Verkleinere C1 und sieh, wie sie wächst.",
+            scope_t: 60e-3,
+            digital: false,
+            doc: B::new("Brückengleichrichter")
+                .part(K::AcVoltage { amp: 12.0, freq: 50.0, offset: 0.0 }, 11, -1, 3)
+                .part(K::Diode { kind: DiodeType::Si1N4007 }, 8, -5, 3)
+                .part(K::Diode { kind: DiodeType::Si1N4007 }, 8, 3, 3)
+                .part(K::Diode { kind: DiodeType::Si1N4007 }, 14, -5, 3)
+                .part(K::Diode { kind: DiodeType::Si1N4007 }, 14, 3, 3)
+                .named(K::Capacitor { c: 470e-6 }, 20, 0, 1, "C1")
+                .named(K::Resistor { r: 1e3 }, 25, 0, 1, "R_Last")
+                .part(K::Ground, 17, 8, 0)
+                .named(K::Probe, 25, -8, 0, "U_aus")
+                .wire(&[(8, -3), (8, 1)])
+                .wire(&[(14, -3), (14, 1)])
+                .wire(&[(9, -1), (8, -1)])
+                .wire(&[(13, -1), (14, -1)])
+                .wire(&[(8, -7), (8, -8), (25, -8), (25, -2)])
+                .wire(&[(14, -7), (14, -8)])
+                .wire(&[(8, 5), (8, 8), (25, 8), (25, 2)])
+                .wire(&[(14, 5), (14, 8)])
+                .wire(&[(20, -8), (20, -2)])
+                .wire(&[(20, 2), (20, 8)])
+                .done(),
+        },
+        Example {
+            title: "MOSFET schaltet eine Lampe",
+            category: "Transistoren",
+            summary: "Der 2N7000 schaltet eine 12-V-Lampe. Das Gate braucht nur Spannung, keinen Strom. Der Pull-down R_PD \
+                      hält es aus, solange der Taster offen ist. Halte S1 gedrückt.",
+            scope_t: 10e-3,
+            digital: false,
+            doc: B::new("MOSFET schaltet eine Lampe")
+                .part(K::DcVoltage { v: 12.0 }, 0, 0, 0)
+                .named(K::PushButton, 6, -5, 1, "S1")
+                .named(K::Resistor { r: 1e3 }, 6, 0, 1, "R_G")
+                .named(K::Resistor { r: 100e3 }, 10, 5, 1, "R_PD")
+                .part(K::Lamp { v_nom: 12.0, p_nom: 1.2 }, 16, -4, 1)
+                .named(K::Transistor { kind: T::N2n7000 }, 15, 2, 0, "T1")
+                .part(K::Ground, 4, 8, 0)
+                .named(K::Probe, 12, 2, 0, "U_GS")
+                .wire(&[(0, -2), (0, -8), (16, -8), (16, -6)])
+                .wire(&[(6, -8), (6, -7)])
+                .wire(&[(6, -3), (6, -2)])
+                .wire(&[(6, 2), (13, 2)])
+                .wire(&[(10, 2), (10, 3)])
+                .wire(&[(10, 7), (10, 8)])
+                .wire(&[(16, -2), (16, 0)])
+                .wire(&[(16, 4), (16, 8)])
+                .wire(&[(0, 2), (0, 8), (16, 8)])
+                .done(),
+        },
         // ---------------- Echte Bausteine (Mixed-Signal) ----------------
         Example {
             title: "NAND-Baustein (74HC00) mit Tastern",
+            category: "Logik-ICs mit Versorgung",
             summary: "Ein echter Logik-IC an 5 V. Taster mit Pull-down-Widerständen liefern die Eingangsspannungen, \
                       die LED zeigt den Ausgang. Halte beide Taster gedrückt: Erst dann geht die LED aus.",
             scope_t: 10e-3,
@@ -489,6 +576,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "3,3 V trifft 5 V: 74HC und 74HCT",
+            category: "Logik-ICs mit Versorgung",
             summary: "Ein 3,3-V-Signal (wie von einem ESP32) an zwei UND-Bausteinen mit 5 V. Der 74HC braucht für eine 1 \
                       mindestens 3,5 V und sieht X, der 74HCT erkennt schon 2 V als 1. Öffne den Schalter per Doppelklick.",
             scope_t: 10e-3,
@@ -531,6 +619,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "Schmitt-Trigger-Oszillator (74HC14)",
+            category: "Logik-ICs mit Versorgung",
             summary: "Der Kondensator lädt über R1 bis zur oberen Schaltschwelle, dann kippt der Ausgang und entlädt ihn bis zur \
                       unteren. Die LED blinkt etwa 2,6-mal pro Sekunde. Der Messpunkt U_C zeigt die Hysterese.",
             scope_t: 2.0,
@@ -563,6 +652,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "555-Blinker",
+            category: "Timer, OpAmp & Wandler",
             summary: "Der Timer NE555 lädt C1 über R_A und R_B bis ⅔ der Versorgung und entlädt ihn über R_B bis ⅓. \
                       Die LED hängt zwischen +9 V und dem Ausgang: Sie leuchtet, während der Ausgang low ist (etwa 1,4 Hz).",
             scope_t: 3.0,
@@ -597,6 +687,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "OpAmp-Verstärker (LM358)",
+            category: "Timer, OpAmp & Wandler",
             summary: "Nichtinvertierender Verstärker mit V = 1 + R2/R1 = 3 an einfacher 12-V-Versorgung. Dreh das Poti hoch: \
                       Ab etwa 3,5 V am Eingang bleibt der Ausgang bei 10,5 V stehen, der LM358 ist übersteuert.",
             scope_t: 10e-3,
@@ -633,6 +724,7 @@ pub fn all() -> Vec<Example> {
         },
         Example {
             title: "ADC und DAC (4 Bit)",
+            category: "Timer, OpAmp & Wandler",
             summary: "Der A/D-Umsetzer macht aus der Poti-Spannung eine 4-Bit-Zahl, der D/A-Umsetzer daraus wieder eine Spannung. \
                       Dreh das Poti: Die Bits zählen binär, U_DAC springt in Stufen von 5 V / 16 = 0,31 V.",
             scope_t: 10e-3,
@@ -670,7 +762,10 @@ pub fn all() -> Vec<Example> {
                 .wire(&[(34, 5), (34, 6)])
                 .done(),
         },
-    ]
+    ];
+    // nach Themen ordnen (stabil: innerhalb eines Themas bleibt die Reihenfolge)
+    v.sort_by_key(|e| CATEGORIES.iter().position(|c| c.0 == e.category).unwrap_or(usize::MAX));
+    v
 }
 
 #[cfg(test)]
@@ -885,6 +980,10 @@ mod tests {
         let outs: Vec<Vec<_>> = tt.rows.iter().map(|r| r.1.clone()).collect();
         assert_eq!(outs, vec![vec![L0, L0], vec![L1, L0], vec![L1, L0], vec![L0, L1]]);
         // Volladdierer aus zwei eigenen ICs
+        // Jedes Beispiel hat ein bekanntes Thema
+        for e in &all {
+            assert!(super::CATEGORIES.iter().any(|c| c.0 == e.category), "{}", e.title);
+        }
         let ex = find("Volladdierer");
         let nl = netlist::build(&ex.doc);
         assert!(nl.error.is_none() && nl.mixed.is_none(), "{:?}", nl.error);

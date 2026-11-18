@@ -70,9 +70,17 @@ cargo test --workspace              # alle Tests (Simulator, Netzliste, Modell)
 - **Eigene ICs:** Eine Schaltung mit „IC-Anschlüssen“ wird per Klick zum Baustein (Bibliothek
   in `~/.elab/ics`), beliebig oft einsetzbar und schachtelbar; jede Datei trägt die
   Innenschaltung mit, „Innenschaltung öffnen“ zeigt sie.
+- **Geführte Übungen** zu LED, Kondensator, NPN/PNP-Transistor, N-/P-MOSFET, Logik-IC, NE555
+  und OpAmp: Schritt für Schritt das Bauteil richtig beschalten. elab prüft jeden Schritt an
+  Netzliste und Simulation, lässt die betroffenen Anschlüsse im Schaltplan pulsieren, zeigt
+  passende Messwerte und erkennt typische Fehler (LED verdreht, Basis ohne Widerstand, VCC und
+  GND vertauscht, offener Eingang). Start im Tutorial („▶ Übung starten“), nach dem Setzen
+  des Bauteils oder über „Beispiele → Geführte Übungen“.
 - **Undo/Redo** für jede Änderung, **Speichern/Laden** als `.elab` (JSON), automatische
   Sicherung (`~/.elab/letzte-sitzung.elab`, wiederherstellbar über „Beispiele“),
-  **22 Beispielschaltungen** (sechs analog, vier mit Transistoren, sechs digital, sechs mit ICs).
+  **24 Beispielschaltungen** in acht Themen: Grundlagen · Kondensator, Spule, Diode ·
+  Transistoren · Logik aus Transistoren · Logikgatter · Speicher & Zähler ·
+  Logik-ICs mit Versorgung · Timer, OpAmp & Wandler.
 
 ### Bauteile
 
@@ -124,10 +132,12 @@ elab/
     ├── src/netlist.rs    Schaltplan → Netze → Simulator-Schaltung
     ├── src/sim.rs        Arbeitspunkt, Oszilloskop, Wahrheitstabelle, SI-Eingabe
     ├── tests/components.rs  jedes Bauteil eingefügt und gegen Handrechnung geprüft
-    ├── src/examples.rs   Beispielschaltungen
+    ├── src/examples.rs   Beispielschaltungen, nach Themen gruppiert
+    ├── src/lessons.rs    Geführte Übungen: Schritte mit automatischer Prüfung
     ├── src/editor.rs     Zeichenfläche, Werkzeuge, Live-Darstellung
     ├── src/panels.rs     Logikanalysator, Wahrheitstabelle, Echtzeit-Digitalbetrieb
     ├── src/mixed.rs      Echtzeitbetrieb gemischter Schaltungen
+    ├── src/lesson_ui.rs  Übungskarte im Tutorial, pulsierende Anschlüsse
     ├── src/symbols.rs    Schaltzeichen
     ├── src/tutorial.rs   Erklärtexte
     ├── src/script.rs     Testskripte für automatisierte Oberflächentests
@@ -146,6 +156,7 @@ cargo run --release -- --script crates/elab-app/ui-tests/digital_bauen.txt
 cargo run --release -- --script crates/elab-app/ui-tests/transistor_bauen.txt
 cargo run --release -- --script crates/elab-app/ui-tests/ic_bauen.txt
 cargo run --release -- --script crates/elab-app/ui-tests/eigenes_ic.txt
+cargo run --release -- --script crates/elab-app/ui-tests/uebung_transistor.txt
 ```
 
 - `schaltung_bauen`: LED-Schaltung von Grund auf, Verdrahten, Verschieben, Drehen, Undo
@@ -154,6 +165,7 @@ cargo run --release -- --script crates/elab-app/ui-tests/eigenes_ic.txt
 - `transistor_bauen`: Transistorschalter per Drag & Drop, Taster gedrückt halten
 - `ic_bauen`: NAND-Baustein mit Versorgung, Pull-down und LED; Taster; offener Eingang (X)
 - `eigenes_ic`: Inverter aus IC-Anschlüssen bauen, als IC speichern, einsetzen und prüfen
+- `uebung_transistor`: geführte Übung „NPN-Transistor als Schalter“ Schritt für Schritt durchspielen
 - `zufallstest.py`: erzeugt Skripte mit vielen zufälligen schnellen Aktionen über alle Bauteile
   (`python3 crates/elab-app/ui-tests/zufallstest.py 1 150 > /tmp/z.txt`)
 

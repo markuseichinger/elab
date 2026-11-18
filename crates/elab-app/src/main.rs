@@ -1,6 +1,7 @@
 //! elab – Elektronik-Lernlabor: Schaltungen bauen und live simulieren.
 
 mod editor;
+mod lesson_ui;
 mod mixed;
 mod panels;
 mod script;
@@ -179,6 +180,10 @@ struct App {
     ic_lib: Vec<Document>,
     /// Dialog „Als IC speichern“: eingegebener Name
     save_ic: Option<String>,
+    /// Laufende geführte Übung
+    lesson: Option<lesson_ui::LessonRun>,
+    /// Übungen, auf die schon hingewiesen wurde
+    lesson_hinted: std::collections::HashSet<String>,
     /// Vom Testskript gedrückter Taster
     script_pressed: Option<u32>,
     /// Palettenkacheln des letzten Bildes (für Testskripte)
@@ -233,6 +238,8 @@ impl App {
             msim_lag: false,
             ic_lib: load_ic_lib(),
             save_ic: None,
+            lesson: None,
+            lesson_hinted: Default::default(),
             script_pressed: None,
             tile_rects: Vec::new(),
             autosaved: None,
@@ -480,12 +487,31 @@ impl App {
                     ui.close();
                 }
                 ui.separator();
-                for (k, ex) in examples::all().iter().enumerate() {
-                    if ui.button(RichText::new(ex.title).size(14.0)).on_hover_text(ex.summary).clicked() {
-                        self.load_example(k);
-                        ui.close();
-                    }
+                let all = examples::all();
+                for (cat, desc) in examples::CATEGORIES {
+                    let n = all.iter().filter(|e| e.category == cat).count();
+                    ui.menu_button(RichText::new(format!("{cat}  ({n})")).size(14.0), |ui| {
+                        ui.label(RichText::new(desc).small().color(MUTED));
+                        ui.separator();
+                        for (k, ex) in all.iter().enumerate().filter(|(_, e)| e.category == cat) {
+                            if ui.button(RichText::new(ex.title).size(14.0)).on_hover_text(ex.summary).clicked() {
+                                self.load_example(k);
+                                ui.close();
+                            }
+                        }
+                    });
                 }
+                ui.separator();
+                ui.menu_button(RichText::new("🧩 Geführte Übungen").size(14.0), |ui| {
+                    ui.label(RichText::new("Schritt für Schritt ein Bauteil richtig beschalten").small().color(MUTED));
+                    ui.separator();
+                    for l in elab_app::lessons::all() {
+                        if ui.button(RichText::new(&l.title).size(14.0)).on_hover_text(&l.intro).clicked() {
+                            self.start_lesson(&l.start_kind);
+                            ui.close();
+                        }
+                    }
+                });
             });
             ui.separator();
             if ui.add_enabled(self.hist.can_undo(), big("⟲")).on_hover_text("Rückgängig (⌘Z)").clicked() {
@@ -1341,6 +1367,7 @@ impl App {
         });
         ui.label(RichText::new("Klicke auf ein Bauteil in der Palette oder im Schaltplan.").small().color(MUTED));
         ui.separator();
+        self.lesson_card(ui);
         let d = tutorial::doc(self.topic);
         ui.label(RichText::new(d.title).size(19.0).strong());
         ui.add_space(4.0);
@@ -1519,7 +1546,32 @@ impl App {
         let to_screen = |ed: &Editor, x: f32, y: f32| ed.grid_to_screen(x, y);
         use script::Cmd::*;
         match cmd {
-            Example(n) => self.load_example(n),
+            Example(n) => {
+                let all = examples::all();
+                let idx = all.iter().position(|e| e.title.starts_with(n.as_str())).or_else(|| n.parse::<usize>().ok());
+                match idx {
+                    Some(i) if i < all.len() => self.load_example(i),
+                    _ => panic!("Skript: Beispiel „{n}“ nicht gefunden"),
+                }
+            }
+            Lesson(cmd) => match cmd.as_str() {
+                "stop" => self.lesson = None,
+                "skip" => {
+                    if let Some(run) = &mut self.lesson {
+                        if let Some(c) = run.current {
+                            run.progress.skipped.insert(c);
+                        }
+                    }
+                }
+                _ => {
+                    let kind =
+                        self.ed.single_selected().and_then(|id| self.doc.part(id)).map(|p| p.kind.clone()).filter(elab_app::lessons::has_lesson);
+                    match kind.or_else(|| lesson_ui::topic_kind(self.topic)) {
+                        Some(k) => self.start_lesson(&k),
+                        None => panic!("Skript: keine Übung für Auswahl oder Thema"),
+                    }
+                }
+            },
             Tool(name) => {
                 self.ed.place_rot = 0;
                 self.ed.tool = match name.as_str() {
@@ -1650,6 +1702,12 @@ impl App {
                     "undo": self.hist.can_undo(),
                     "tool": format!("{:?}", self.ed.tool),
                     "selected": selected,
+                    "lesson": self.lesson.as_ref().map(|r| json!({
+                        "title": r.lesson.title,
+                        "step": r.current.map(|c| c + 1),
+                        "done": r.done.iter().filter(|d| **d).count(),
+                        "steps": r.lesson.steps.len(),
+                    })),
                     "doc": serde_json::to_value(&self.doc).unwrap(),
                 });
                 let s = serde_json::to_string_pretty(&out).unwrap();
@@ -1808,6 +1866,7 @@ impl eframe::App for App {
         self.update_sim();
         self.update_digital(&ctx);
         self.update_mixed(&ctx);
+        self.lesson_tick();
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
         self.save_ic_dialog(&ctx);
         egui::Panel::left("left").resizable(true).default_size(330.0).min_size(300.0).show(ui, |ui| {
@@ -1827,7 +1886,9 @@ impl eframe::App for App {
         }
         egui::CentralPanel::no_frame().show(ui, |ui| {
             let mixed = self.msim.is_some();
+            let highlight = self.lesson_highlight();
             let live = LiveData {
+                highlight: &highlight,
                 nl: self.nl.as_ref(),
                 op: self.op.as_ref().ok(),
                 logic: if mixed { Some(&self.mixed_logic[..]) } else { self.dsim.as_ref().map(|d| d.nets()) },
@@ -1837,6 +1898,9 @@ impl eframe::App for App {
             let out = self.ed.ui(ui, &mut self.doc, &mut self.hist, &live);
             if let Some(k) = out.focus {
                 self.topic = Topic::of(&k);
+            }
+            if let Some(id) = out.placed {
+                self.lesson_placed(id);
             }
             if let Some(id) = out.toggle {
                 if let Some(PartKind::LogicInput { on }) = self.doc.part_mut(id).map(|p| &mut p.kind) {
