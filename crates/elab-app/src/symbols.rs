@@ -226,6 +226,12 @@ pub fn draw(pen: &Pen, kind: &PartKind, live: Live) {
         PartKind::Probe => {
             pen.disc((0.0, 0.0), 0.18, pen.color);
         }
+        PartKind::Port => {
+            pen.line((0.0, 0.0), (0.35, 0.0));
+            let flag = [(0.35, 0.0), (0.85, -0.55), (2.3, -0.55), (2.3, 0.55), (0.85, 0.55)];
+            pen.fill(&flag, Color32::from_rgb(40, 34, 24));
+            pen.poly(&flag, true);
+        }
         PartKind::Transistor { kind } => {
             use elab_app::model::TransistorFamily as F;
             let fam = kind.family();
@@ -295,7 +301,7 @@ pub fn draw(pen: &Pen, kind: &PartKind, live: Live) {
             pen.text((0.0, 0.0), if matches!(kind, PartKind::Voltmeter) { "V" } else { "A" }, 0.95, pen.color);
             plus(pen, (-1.45, -0.45));
         }
-        _ if kind.is_ic() => draw_ic(pen, kind, &live),
+        _ if kind.is_ic() || kind.is_custom() => draw_ic(pen, kind, &live),
         _ => draw_digital(pen, kind, &live),
     }
 }
@@ -404,7 +410,7 @@ fn draw_ic(pen: &Pen, kind: &PartKind, live: &Live) {
             }
             let sz = 0.46;
             for (k, p) in pins.iter().enumerate() {
-                let name = names[k];
+                let name = names[k].as_str();
                 let w = name.trim_start_matches('/').chars().count() as f32 * sz * 0.55;
                 let (px, py) = (p.x as f32, p.y as f32);
                 let at = if k < nl {

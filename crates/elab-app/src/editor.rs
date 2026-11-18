@@ -768,6 +768,9 @@ impl Editor {
                     .map(|pn| pn.iter().map(|&n| Some(live.logic_of(n).unwrap_or(Logic::Z))).collect())
                     .filter(|_| live.logic.is_some())
                     .unwrap_or_default()
+            } else if part.kind.is_custom() {
+                // Eigene ICs: Pegel der angeschlossenen Digitalnetze
+                live.nl.and_then(|nl| nl.pin_nets.get(&part.id)).map(|pn| pn.iter().map(|&n| live.logic_of(n)).collect()).unwrap_or_default()
             } else {
                 Vec::new()
             };
@@ -776,8 +779,13 @@ impl Editor {
                 self.paint_meter(painter, r, part, vals.copied(), live.op.is_some(), s);
                 continue;
             }
+            if let PartKind::Port = part.kind {
+                let (dx, dy) = rot_f(1.4, 0.0, part.rot);
+                painter.text(origin + Vec2::new(dx, dy) * s, Align2::CENTER_CENTER, &part.name, font.clone(), ACCENT);
+                continue;
+            }
             if s >= 9.0 && !matches!(part.kind, PartKind::Ground | PartKind::LogicHigh) {
-                if part.kind.is_ic() {
+                if part.kind.is_ic() || part.kind.is_custom() {
                     // Name (und Typ) oben rechts am Gehäuse
                     let (lx, ly, with_type) = match part.kind.ic_sides() {
                         Some(sides) => {
@@ -999,7 +1007,7 @@ impl Editor {
                     lines.push((part.kind.value_text(), MUTED, false));
                 }
                 if let Hover::Pin(_, _, k) = self.hover {
-                    let pname = part.kind.pin_names().get(k).copied().unwrap_or("?");
+                    let pname = part.kind.pin_names().get(k).cloned().unwrap_or_else(|| "?".into());
                     let mut l = if part.kind.local_pins().len() == 1 { "Anschluss".to_string() } else { format!("Anschluss {pname}") };
                     if let Some(nl) = live.nl {
                         let Some(&n) = nl.pin_nets.get(&id).and_then(|v| v.get(k)) else { return };
@@ -1051,7 +1059,7 @@ impl Editor {
                         let vals: Vec<String> = pins
                             .iter()
                             .enumerate()
-                            .filter_map(|(k, v)| v.map(|v| format!("{} = {}", names.get(k).unwrap_or(&"?"), v.symbol())))
+                            .filter_map(|(k, v)| v.map(|v| format!("{} = {}", names.get(k).map_or("?", |s| s.as_str()), v.symbol())))
                             .collect();
                         lines.push((vals.join("  ·  "), symbols::logic_color(Logic::L1), false));
                         if pins.iter().flatten().any(|v| *v == Logic::X) {
@@ -1115,7 +1123,7 @@ impl Editor {
                         let vals: Vec<String> = pn
                             .iter()
                             .enumerate()
-                            .map(|(k, &n)| format!("{} = {}", names.get(k).unwrap_or(&"?"), live.logic_of(n).map_or("–", |l| l.symbol())))
+                            .map(|(k, &n)| format!("{} = {}", names.get(k).map_or("?", |s| s.as_str()), live.logic_of(n).map_or("–", |l| l.symbol())))
                             .collect();
                         lines.push((vals.join("  ·  "), symbols::logic_color(Logic::L1), false));
                     }

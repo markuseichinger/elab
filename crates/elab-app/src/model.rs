@@ -289,20 +289,25 @@ impl OpAmpType {
 
 /// Anschlüsse eines rechteckigen IC-Symbols: links, rechts, oben, unten.
 pub struct IcSides {
-    pub left: &'static [&'static str],
-    pub right: &'static [&'static str],
-    pub top: &'static [&'static str],
-    pub bottom: &'static [&'static str],
+    pub left: Vec<String>,
+    pub right: Vec<String>,
+    pub top: Vec<String>,
+    pub bottom: Vec<String>,
 }
 
 impl IcSides {
+    fn of(left: &[&str], right: &[&str], top: &[&str], bottom: &[&str]) -> Self {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect();
+        Self { left: v(left), right: v(right), top: v(top), bottom: v(bottom) }
+    }
+
     /// Halbe Höhe des Kastens: Platz für die Anschlüsse an den Seiten plus eine Zeile für die Beschriftung oben und unten
     fn rows(&self) -> i32 {
         self.left.len().max(self.right.len()).max(2) as i32 + 1
     }
     /// Halbe Breite des Kastens
     fn half_w(&self) -> i32 {
-        let long = self.left.iter().chain(self.right).any(|n| n.trim_start_matches('/').len() >= 4);
+        let long = self.left.iter().chain(&self.right).any(|n| n.trim_start_matches('/').chars().count() >= 4);
         (self.top.len().max(self.bottom.len()) as i32).max(if long { 3 } else { 2 })
     }
     /// Pins in lokalen Koordinaten: links, rechts, oben, unten.
@@ -321,8 +326,8 @@ impl IcSides {
         let (h, w) = (self.rows() as f32, self.half_w() as f32);
         (-w, -h, w, h)
     }
-    pub fn names(&self) -> Vec<&'static str> {
-        self.left.iter().chain(self.right).chain(self.top).chain(self.bottom).copied().collect()
+    pub fn names(&self) -> Vec<String> {
+        self.left.iter().chain(&self.right).chain(&self.top).chain(&self.bottom).cloned().collect()
     }
 }
 
@@ -527,6 +532,54 @@ pub enum PartKind {
     Adc4,
     /// 4-Bit-Digital-Analog-Umsetzer (R-2R-Netzwerk, ohne Puffer)
     Dac4,
+    /// Anschluss einer Schaltung, die als eigenes IC gespeichert wird
+    Port,
+    /// Eigenes IC: gespeicherte Teilschaltung, ihre Anschlüsse sind die Port-Bauteile darin
+    Custom {
+        name: String,
+        def: Box<Document>,
+    },
+}
+
+/// Seite eines IC-Anschlusses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// Anschlüsse eines eigenen ICs in Pin-Reihenfolge: (ID des Port-Bauteils, Name, Seite).
+/// Versorgungsnamen wandern nach oben bzw. unten, die übrigen nach links oder rechts,
+/// je nachdem, wo sie in der Teilschaltung liegen; von oben nach unten sortiert.
+pub fn custom_ports(def: &Document) -> Vec<(u32, String, Side)> {
+    let ports: Vec<&Part> = def.parts.iter().filter(|p| matches!(p.kind, PartKind::Port)).collect();
+    if ports.is_empty() {
+        return Vec::new();
+    }
+    let cx = ports.iter().map(|p| p.pos.x as f64).sum::<f64>() / ports.len() as f64;
+    let side = |p: &Part| {
+        let n = p.name.to_uppercase();
+        if ["VCC", "VDD", "V+", "+5V", "5V", "+3V3", "3V3", "+12V", "12V"].contains(&n.as_str()) {
+            Side::Top
+        } else if ["GND", "VSS", "V-", "V−", "0V", "VEE"].contains(&n.as_str()) {
+            Side::Bottom
+        } else if (p.pos.x as f64) < cx || (p.pos.x as f64 == cx && ports.len() == 1) {
+            Side::Left
+        } else {
+            Side::Right
+        }
+    };
+    let mut v: Vec<(u32, String, Side, P)> = ports.iter().map(|p| (p.id, p.name.clone(), side(p), p.pos)).collect();
+    let order = |s: Side| match s {
+        Side::Left => 0,
+        Side::Right => 1,
+        Side::Top => 2,
+        Side::Bottom => 3,
+    };
+    v.sort_by_key(|(_, _, s, p)| (order(*s), if matches!(s, Side::Top | Side::Bottom) { (p.x, p.y) } else { (p.y, p.x) }));
+    v.into_iter().map(|(id, n, s, _)| (id, n, s)).collect()
 }
 
 /// Rolle eines IC-Anschlusses.
@@ -603,7 +656,18 @@ impl PartKind {
 
     /// Ist das ein echter Baustein mit Versorgung?
     pub fn is_ic(&self) -> bool {
-        self.shape() == Shape::Ic
+        self.shape() == Shape::Ic && !self.is_custom()
+    }
+
+    /// Eigenes IC (Teilschaltung)?
+    pub fn is_custom(&self) -> bool {
+        matches!(self, PartKind::Custom { .. })
+    }
+
+    /// Bauteile ohne eigenes Simulationsmodell: Masse, Messpunkte, Voltmeter, IC-Anschlüsse,
+    /// eigene ICs (deren Inhalt wird beim Aufbau der Netzliste eingesetzt).
+    pub fn is_neutral(&self) -> bool {
+        matches!(self, PartKind::Ground | PartKind::Probe | PartKind::Voltmeter | PartKind::Port | PartKind::Custom { .. })
     }
 
     /// Typbezeichnung eines ICs, z. B. „74HC00“.
@@ -629,6 +693,7 @@ impl PartKind {
             OpAmp { kind } => kind.label().into(),
             Adc4 => "ADC 4 Bit".into(),
             Dac4 => "DAC 4 Bit".into(),
+            Custom { name, .. } => name.clone(),
             _ => return None,
         })
     }
@@ -653,11 +718,16 @@ impl PartKind {
     pub fn ic_sides(&self) -> Option<IcSides> {
         use PartKind::*;
         Some(match self {
-            DffIc { .. } => IcSides { left: &["D", "C"], right: &["Q", "/Q"], top: &["VCC"], bottom: &["GND"] },
-            CounterIc { .. } => IcSides { left: &["C", "/MR"], right: &["Q0", "Q1", "Q2", "Q3"], top: &["VCC"], bottom: &["GND"] },
-            Timer555 => IcSides { left: &["TRIG", "THR", "CTRL"], right: &["OUT", "DIS"], top: &["VCC", "/RES"], bottom: &["GND"] },
-            Adc4 => IcSides { left: &["IN"], right: &["D0", "D1", "D2", "D3"], top: &["VCC", "REF"], bottom: &["GND"] },
-            Dac4 => IcSides { left: &["D0", "D1", "D2", "D3"], right: &["OUT"], top: &["VCC", "REF"], bottom: &["GND"] },
+            DffIc { .. } => IcSides::of(&["D", "C"], &["Q", "/Q"], &["VCC"], &["GND"]),
+            CounterIc { .. } => IcSides::of(&["C", "/MR"], &["Q0", "Q1", "Q2", "Q3"], &["VCC"], &["GND"]),
+            Timer555 => IcSides::of(&["TRIG", "THR", "CTRL"], &["OUT", "DIS"], &["VCC", "/RES"], &["GND"]),
+            Adc4 => IcSides::of(&["IN"], &["D0", "D1", "D2", "D3"], &["VCC", "REF"], &["GND"]),
+            Dac4 => IcSides::of(&["D0", "D1", "D2", "D3"], &["OUT"], &["VCC", "REF"], &["GND"]),
+            Custom { def, .. } => {
+                let ports = custom_ports(def);
+                let side = |s: Side| ports.iter().filter(|p| p.2 == s).map(|p| p.1.clone()).collect();
+                IcSides { left: side(Side::Left), right: side(Side::Right), top: side(Side::Top), bottom: side(Side::Bottom) }
+            }
             _ => return None,
         })
     }
@@ -741,7 +811,8 @@ impl PartKind {
             Gate { .. } | LogicInput { .. } | Button | Clock { .. } | LogicHigh | LogicLed { .. } | DFlipFlop | JkFlipFlop | Counter4 | SevenSeg => {
                 Shape::Logic
             }
-            GateIc { .. } | SchmittIc { .. } | DffIc { .. } | CounterIc { .. } | Timer555 | OpAmp { .. } | Adc4 | Dac4 => Shape::Ic,
+            GateIc { .. } | SchmittIc { .. } | DffIc { .. } | CounterIc { .. } | Timer555 | OpAmp { .. } | Adc4 | Dac4 | Custom { .. } => Shape::Ic,
+            Port => Shape::OnePin,
             _ => Shape::TwoPole,
         }
     }
@@ -778,7 +849,8 @@ impl PartKind {
             DFlipFlop | JkFlipFlop => "FF",
             Counter4 => "CTR",
             SevenSeg => "ANZ",
-            GateIc { .. } | SchmittIc { .. } | DffIc { .. } | CounterIc { .. } | Timer555 | OpAmp { .. } | Adc4 | Dac4 => "U",
+            GateIc { .. } | SchmittIc { .. } | DffIc { .. } | CounterIc { .. } | Timer555 | OpAmp { .. } | Adc4 | Dac4 | Custom { .. } => "U",
+            Port => "P",
         }
     }
 
@@ -843,6 +915,8 @@ impl PartKind {
             OpAmp { .. } => "Operationsverstärker",
             Adc4 => "A/D-Umsetzer",
             Dac4 => "D/A-Umsetzer",
+            Port => "IC-Anschluss",
+            Custom { .. } => "Eigenes IC",
         }
     }
 
@@ -920,11 +994,11 @@ impl PartKind {
     }
 
     /// Bezeichnung der Anschlüsse für Erklärungen.
-    pub fn pin_names(&self) -> Vec<&'static str> {
+    pub fn pin_names(&self) -> Vec<String> {
         if let Some(sides) = self.ic_sides() {
             return sides.names();
         }
-        self.static_pin_names().to_vec()
+        self.static_pin_names().iter().map(|s| s.to_string()).collect()
     }
 
     fn static_pin_names(&self) -> &'static [&'static str] {
@@ -989,6 +1063,7 @@ impl PartKind {
         match self {
             Ground => (-0.8, -0.2, 0.8, 1.3),
             Probe => (-0.2, -1.6, 2.6, 0.2),
+            Port => (-0.2, -0.7, 2.4, 0.7),
             Transistor { .. } => (-2.0, -2.0, 1.6, 2.0),
             Potentiometer { .. } => (-2.0, -2.0, 2.0, 0.9),
             Voltmeter | Ammeter => (-2.0, -1.1, 2.0, 1.1),
@@ -1136,7 +1211,7 @@ impl Document {
     pub fn add_part(&mut self, kind: PartKind, pos: P, rot: u8) -> u32 {
         let name = match kind {
             PartKind::Ground => "GND".to_string(),
-            PartKind::LogicInput { .. } | PartKind::Button => self.next_letter(),
+            PartKind::LogicInput { .. } | PartKind::Button | PartKind::Port => self.next_letter(),
             _ => self.next_name(kind.prefix()),
         };
         let id = self.new_id();
@@ -1467,6 +1542,24 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_ic_roundtrip_and_pins() {
+        let mut def = Document::default();
+        for (n, x, y) in [("VCC", 5, -6), ("IN", 0, 0), ("GND", 5, 6), ("OUT", 10, 0), ("EN", 0, 3)] {
+            let id = def.add_part(PartKind::Port, P::new(x, y), 0);
+            def.part_mut(id).unwrap().name = n.into();
+        }
+        def.add_part(PartKind::Resistor { r: 1e3 }, P::new(5, 0), 0);
+        let k = PartKind::Custom { name: "Test".into(), def: Box::new(def.clone()) };
+        let names = k.pin_names();
+        assert_eq!(names, ["IN", "EN", "OUT", "VCC", "GND"]);
+        assert_eq!(k.local_pins().len(), 5);
+        let mut d = Document::default();
+        d.add_part(k, P::new(0, 0), 1);
+        let back = Document::from_json(&d.to_json()).unwrap();
+        assert_eq!(back, d);
+    }
 
     #[test]
     fn rotation_is_clockwise_on_screen() {

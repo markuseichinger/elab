@@ -70,6 +70,31 @@ fn autosave_path() -> PathBuf {
     data_dir().join("letzte-sitzung.elab")
 }
 
+fn ic_dir() -> PathBuf {
+    data_dir().join("ics")
+}
+
+/// Lädt die eigenen ICs aus ~/.elab/ics.
+fn load_ic_lib() -> Vec<Document> {
+    let mut v: Vec<Document> = std::fs::read_dir(ic_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "elab"))
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .filter_map(|s| Document::from_json(&s).ok())
+        .filter(|d| !d.title.is_empty())
+        .collect();
+    v.sort_by_key(|a| a.title.to_lowercase());
+    v
+}
+
+/// Dateiname für ein IC: nur Buchstaben, Ziffern, - und _.
+fn ic_file(name: &str) -> PathBuf {
+    let safe: String = name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    ic_dir().join(format!("{safe}.elab"))
+}
+
 /// Schreibt bei einem Absturz einen Bericht nach ~/.elab/absturz.txt und zeigt eine Meldung,
 /// statt dass das Fenster kommentarlos verschwindet.
 fn install_crash_handler(dialog: bool) {
@@ -150,6 +175,10 @@ struct App {
     pin_logic: HashMap<u32, Vec<Option<elab_sim::digital::Logic>>>,
     /// Simulation kommt nicht hinterher
     msim_lag: bool,
+    /// Bibliothek eigener ICs (Titel = Name)
+    ic_lib: Vec<Document>,
+    /// Dialog „Als IC speichern“: eingegebener Name
+    save_ic: Option<String>,
     /// Vom Testskript gedrückter Taster
     script_pressed: Option<u32>,
     /// Palettenkacheln des letzten Bildes (für Testskripte)
@@ -202,6 +231,8 @@ impl App {
             mixed_logic: Vec::new(),
             pin_logic: HashMap::new(),
             msim_lag: false,
+            ic_lib: load_ic_lib(),
+            save_ic: None,
             script_pressed: None,
             tile_rects: Vec::new(),
             autosaved: None,
@@ -590,7 +621,13 @@ impl App {
                 }
             }
         });
-        let groups = self.palette.groups();
+        let mut groups = self.palette.groups();
+        if self.palette == PalTab::Ic {
+            let mut own = vec![PartKind::Port];
+            own.extend(self.ic_lib.iter().map(|d| PartKind::Custom { name: d.title.clone(), def: Box::new(d.clone()) }));
+            groups.push(("Eigene ICs", own));
+        }
+        let mut remove_ic: Option<String> = None;
         self.tile_rects.clear();
         for (cat, kinds) in groups {
             ui.label(RichText::new(cat).small().color(MUTED));
@@ -610,6 +647,15 @@ impl App {
                     if r.dragged() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                     }
+                    if let PartKind::Custom { name, .. } = &kind {
+                        let name = name.clone();
+                        r.context_menu(|ui| {
+                            if ui.button("Aus der Bibliothek entfernen").clicked() {
+                                remove_ic = Some(name.clone());
+                                ui.close();
+                            }
+                        });
+                    }
                     if r.clicked() {
                         self.topic = Topic::of(&kind);
                         self.ed.tool = Tool::Place(kind);
@@ -618,6 +664,95 @@ impl App {
                 }
             });
             ui.add_space(2.0);
+        }
+        if self.palette == PalTab::Ic
+            && ui
+                .button("💾 Schaltplan als IC speichern …")
+                .on_hover_text("Die aktuelle Schaltung wird ein Baustein. Ihre IC-Anschlüsse werden die Pins.")
+                .clicked()
+        {
+            self.save_ic = Some(if self.doc.title.is_empty() { String::new() } else { self.doc.title.clone() });
+            self.topic = Topic::CustomIc;
+        }
+        if let Some(name) = remove_ic {
+            let _ = std::fs::remove_file(ic_file(&name));
+            self.ic_lib.retain(|d| d.title != name);
+            self.flash(format!("„{name}“ aus der Bibliothek entfernt. Eingesetzte Exemplare bleiben erhalten."), ACCENT);
+        }
+    }
+
+    /// Speichert den aktuellen Schaltplan als eigenes IC in der Bibliothek.
+    fn save_custom_ic(&mut self, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Bitte einen Namen eingeben.".into());
+        }
+        let ports = elab_app::model::custom_ports(&self.doc);
+        if ports.is_empty() {
+            return Err("Die Schaltung hat keine IC-Anschlüsse. Setze mindestens ein Bauteil „IC-Anschluss“.".into());
+        }
+        let mut def = self.doc.clone();
+        def.title = name.to_string();
+        std::fs::create_dir_all(ic_dir()).map_err(|e| e.to_string())?;
+        std::fs::write(ic_file(name), def.to_json()).map_err(|e| e.to_string())?;
+        self.ic_lib.retain(|d| d.title != name);
+        self.ic_lib.push(def);
+        self.ic_lib.sort_by_key(|a| a.title.to_lowercase());
+        self.palette = PalTab::Ic;
+        self.flash(format!("IC „{name}“ gespeichert ({} Anschlüsse). Es liegt jetzt unter „Eigene ICs“.", ports.len()), GREEN);
+        Ok(())
+    }
+
+    /// Dialog zum Speichern als IC.
+    fn save_ic_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut name) = self.save_ic.take() else { return };
+        let ports = elab_app::model::custom_ports(&self.doc);
+        let mut open = true;
+        let mut cancel = false;
+        let mut done = false;
+        egui::Window::new("Schaltplan als IC speichern").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(200.0).hint_text("z. B. Halbaddierer"));
+                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    done = true;
+                }
+            });
+            if ports.is_empty() {
+                ui.label(
+                    RichText::new("Noch keine IC-Anschlüsse: Setze das Bauteil „IC-Anschluss“ an jede Leitung, die nach außen führen soll.")
+                        .color(RED),
+                );
+            } else {
+                let side = |s: elab_app::model::Side| ports.iter().filter(|p| p.2 == s).map(|p| p.1.clone()).collect::<Vec<_>>().join(", ");
+                use elab_app::model::Side;
+                for (s, label) in [(Side::Left, "links"), (Side::Right, "rechts"), (Side::Top, "oben"), (Side::Bottom, "unten")] {
+                    let t = side(s);
+                    if !t.is_empty() {
+                        ui.label(RichText::new(format!("Anschlüsse {label}: {t}")).color(MUTED));
+                    }
+                }
+            }
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!ports.is_empty() && !name.trim().is_empty(), egui::Button::new("💾 Speichern")).clicked() {
+                    done = true;
+                }
+                if ui.button("Abbrechen").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+        if cancel {
+            open = false;
+        }
+        if done {
+            match self.save_custom_ic(&name) {
+                Ok(()) => return,
+                Err(e) => self.flash(e, RED),
+            }
+        }
+        if open {
+            self.save_ic = Some(name);
         }
     }
 
@@ -940,6 +1075,28 @@ impl App {
             PartKind::Dac4 => {
                 ui.label(RichText::new("U_OUT = U_REF · Code / 16, Innenwiderstand 10 kΩ (R-2R).").small().color(MUTED));
             }
+            PartKind::Port => {
+                ui.label(
+                    RichText::new("Der Name wird zum Pin-Namen, wenn du die Schaltung als IC speicherst. VCC und GND landen oben und unten.")
+                        .small()
+                        .color(MUTED),
+                );
+            }
+            PartKind::Custom { name, def } => {
+                let ports: Vec<String> = elab_app::model::custom_ports(&def).into_iter().map(|p| p.1).collect();
+                let n = def.parts.iter().filter(|p| !matches!(p.kind, PartKind::Port)).count();
+                ui.label(RichText::new(format!("„{name}“: {n} Bauteile innen, Anschlüsse {}", ports.join(", "))).color(MUTED));
+                if ui
+                    .button("🔍 Innenschaltung öffnen")
+                    .on_hover_text("Ersetzt den Schaltplan durch den Inhalt des ICs. ⟲ holt den alten zurück.")
+                    .clicked()
+                {
+                    let mut d = (*def).clone();
+                    d.title = name.clone();
+                    self.replace_doc(d);
+                    self.flash(format!("Innenschaltung von „{name}“ geöffnet. Rückgängig (⌘Z) führt zurück."), BLUE);
+                }
+            }
             PartKind::Ground
             | PartKind::Probe
             | PartKind::PushButton
@@ -964,7 +1121,7 @@ impl App {
                         for (k, &n) in nl.pin_nets.get(&id).into_iter().flatten().enumerate() {
                             let v = ds.net(n);
                             ui.label(
-                                RichText::new(format!("{} = {}", names.get(k).unwrap_or(&"?"), v.symbol()))
+                                RichText::new(format!("{} = {}", names.get(k).map_or("?", |s| s.as_str()), v.symbol()))
                                     .size(15.0)
                                     .strong()
                                     .color(symbols::logic_color(v)),
@@ -1006,7 +1163,8 @@ impl App {
         if vals.is_some() || probe_v.is_some() {
             egui::Frame::group(ui.style()).inner_margin(8.0).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new("Messwerte (Arbeitspunkt)").strong().color(BLUE));
+                let title = if self.msim.is_some() { "Messwerte (jetzt, Echtzeit)" } else { "Messwerte (Arbeitspunkt)" };
+                ui.label(RichText::new(title).strong().color(BLUE));
                 if let Some(v) = probe_v {
                     big_value(ui, "U", &fmt_si(v, "V"), ACCENT);
                 }
@@ -1137,7 +1295,7 @@ impl App {
                     for (k, v) in pins.iter().enumerate() {
                         let Some(v) = v else { continue };
                         ui.label(
-                            RichText::new(format!("{} = {}", names.get(k).unwrap_or(&"?"), v.symbol()))
+                            RichText::new(format!("{} = {}", names.get(k).map_or("?", |s| s.as_str()), v.symbol()))
                                 .size(15.0)
                                 .strong()
                                 .color(symbols::logic_color(*v)),
@@ -1386,7 +1544,10 @@ impl App {
             }
             ClickPx(x, y) => self.script.as_mut().unwrap().click(egui::pos2(x, y), Modifiers::NONE),
             PalDrag(label, gx, gy) => {
-                let has = |t: PalTab| t.groups().iter().flat_map(|g| g.1.iter()).any(|k| k.label() == label);
+                let own = [PartKind::Port.label(), "Eigenes IC"];
+                let has = |t: PalTab| {
+                    t.groups().iter().flat_map(|g| g.1.iter()).any(|k| k.label() == label) || (t == PalTab::Ic && own.contains(&label.as_str()))
+                };
                 let tab = if has(self.palette) {
                     self.palette
                 } else {
@@ -1401,7 +1562,10 @@ impl App {
                     return;
                 }
                 let Some(rect) = self.tile_rects.iter().find(|t| t.0 == label).map(|t| t.1) else {
-                    panic!("Skript: Palettenkachel „{label}“ nicht gefunden");
+                    panic!(
+                        "Skript: Palettenkachel „{label}“ nicht gefunden (vorhanden: {:?})",
+                        self.tile_rects.iter().map(|t| &t.0).collect::<Vec<_>>()
+                    );
                 };
                 let b = to_screen(&self.ed, gx, gy);
                 self.script.as_mut().unwrap().drag(rect.center(), b);
@@ -1470,6 +1634,10 @@ impl App {
                             logic.insert(p.name.clone(), json!(v));
                         }
                     }
+                    if let Some(pins) = self.pin_logic.get(&p.id) {
+                        let v: String = pins.iter().map(|l| l.map_or("·", |l| l.symbol())).collect();
+                        logic.insert(p.name.clone(), json!(v));
+                    }
                 }
                 let bridged: Vec<String> =
                     self.nl.iter().flat_map(|nl| nl.bridged.iter()).filter_map(|id| self.doc.part(*id)).map(|p| p.name.clone()).collect();
@@ -1499,6 +1667,10 @@ impl App {
                     let t = ds.time + (secs * 1e9) as u64;
                     ds.run_until(t);
                 }
+                if let Some(ms) = &mut self.msim {
+                    let t = ms.time() + secs;
+                    let _ = ms.advance(t, None);
+                }
             }
             Hold(x, y) => {
                 let id = self.doc.parts.iter().find(|p| p.bbox().0 <= x && p.bbox().2 >= x && p.bbox().1 <= y && p.bbox().3 >= y).map(|p| p.id);
@@ -1521,6 +1693,11 @@ impl App {
                 }
             }
             Pause(on) => self.dig_paused = on,
+            SaveIc(name) => {
+                if let Err(e) = self.save_custom_ic(&name) {
+                    panic!("Skript: IC speichern: {e}");
+                }
+            }
             Quit => std::process::exit(0),
         }
     }
@@ -1632,6 +1809,7 @@ impl eframe::App for App {
         self.update_digital(&ctx);
         self.update_mixed(&ctx);
         egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
+        self.save_ic_dialog(&ctx);
         egui::Panel::left("left").resizable(true).default_size(330.0).min_size(300.0).show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 self.palette(ui);

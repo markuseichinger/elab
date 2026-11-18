@@ -9,8 +9,11 @@ Elektronik in Rust, als Gegenstück zu [nnlab](https://github.com/markuseichinge
 
 ![CMOS-Inverter aus zwei MOSFETs: echte Logikpegel mit Poti, Volt- und Amperemeter](docs/screenshot_transistor.png)
 
-> **Stand: Phase 3** – Analog- und Digitaltechnik mit Transistoren und Messgeräten:
-> Schaltplan-Editor mit Live-Simulation, Oszilloskop, Logikanalysator, Wahrheitstabelle und Tutorial.
+![Echte Bausteine: Timer NE555 als Blinker in Echtzeit, Sägezahn am Kondensator im Oszilloskop](docs/screenshot_ic.png)
+
+> **Stand: Phase 4** – Analog- und Digitaltechnik, Transistoren, Messgeräte und echte ICs mit
+> Versorgung (74HC/74HCT, NE555, OpAmp, ADC/DAC) in einer gemeinsamen Echtzeitsimulation,
+> eigene ICs aus Teilschaltungen. Dazu Oszilloskop, Logikanalysator, Wahrheitstabelle und Tutorial.
 
 ## Starten
 
@@ -53,9 +56,23 @@ cargo test --workspace              # alle Tests (Simulator, Netzliste, Modell)
 - **Messgeräte:** Voltmeter (parallel, belastet nicht) und Amperemeter (in Reihe, wird auf
   Leitungen automatisch eingefügt) mit LCD-Anzeige; Potentiometer (Schieberegler, Pfeiltasten);
   Taster (gedrückt halten).
+- **Echte Bausteine (Reiter „ICs“)** mit VCC und GND: Sie arbeiten nur bei passender Versorgung,
+  gehen bei Überspannung oder Verpolung kaputt und lesen Spannungen über Schaltschwellen
+  (74HC: 30 %/70 % der Versorgung, 74HCT: 0,8 V/2,0 V, Schmitt-Trigger mit Hysterese).
+  Zwischen den Schwellen oder an offenen Eingängen ist der Pegel X, der Ausgang liefert dann
+  eine halbe Spannung und es fließt Querstrom. Ausgänge haben Innenwiderstand, der Laststrom
+  kommt aus dem VCC-Anschluss. Was ein IC an seinen Anschlüssen sieht, zeigen farbige Pins.
+- **Mixed-Signal in Echtzeit:** Sobald ein IC in der Schaltung ist, läuft die Simulation
+  fortlaufend ab dem Einschalten: Kondensatoren laden sich sichtbar, der 555 blinkt, Taster
+  wirken sofort. Tempo-Regler (Zeitlupe bis 0,001×), Pause, Neustart. Schaltzeitpunkte werden
+  auf den Zeitschritt genau gesucht. Ideale Logikbausteine lassen sich mit Analogteilen
+  mischen (5 V, Schwelle 2,5 V).
+- **Eigene ICs:** Eine Schaltung mit „IC-Anschlüssen“ wird per Klick zum Baustein (Bibliothek
+  in `~/.elab/ics`), beliebig oft einsetzbar und schachtelbar; jede Datei trägt die
+  Innenschaltung mit, „Innenschaltung öffnen“ zeigt sie.
 - **Undo/Redo** für jede Änderung, **Speichern/Laden** als `.elab` (JSON), automatische
   Sicherung (`~/.elab/letzte-sitzung.elab`, wiederherstellbar über „Beispiele“),
-  **15 Beispielschaltungen** (sechs analog, vier mit Transistoren, fünf digital).
+  **22 Beispielschaltungen** (sechs analog, vier mit Transistoren, sechs digital, sechs mit ICs).
 
 ### Bauteile
 
@@ -67,6 +84,10 @@ Messpunkt, Voltmeter, Amperemeter.
 **Digital:** UND, ODER, NICHT, NAND, NOR, XOR, XNOR, Logikschalter, Taster, Taktgeber,
 fester Pegel 1, Logik-Anzeige, 7-Segment-Anzeige (hex), D-Flipflop, JK-Flipflop,
 4-Bit-Zähler. Masse wirkt an Digitalnetzen als Pegel 0.
+
+**ICs:** 74HC00/02/04/08/32/86 (jeweils auch als 74HCT), 74HC14 Schmitt-Trigger, 74HC74
+D-Flipflop, 74HC161 Zähler (Takt, /MR), Timer NE555, Operationsverstärker LM358 und MCP6001
+(Rail-to-Rail), 4-Bit-ADC, 4-Bit-DAC (R-2R), IC-Anschluss und eigene ICs.
 
 Schaltzeichen nach IEC 60617 (Gatter als Rechtecksymbole mit &, ≥1, =1).
 
@@ -93,6 +114,8 @@ elab/
 │   ├── src/circuit.rs    Schaltungsmodell und Fehlermeldungen
 │   ├── src/diode.rs      Shockley-Modell mit pn-Spannungsbegrenzung
 │   ├── src/digital.rs    Ereignisgesteuerte Logiksimulation (0/1/X/Z, Laufzeiten)
+│   ├── src/mixed.rs      Mixed-Signal: Schaltschwellen, Ausgangsstufen, Versorgung, Echtzeit
+│   ├── src/opamp.rs      Operationsverstärker mit Versorgungsgrenzen
 │   ├── src/transistor.rs Ebers-Moll (BJT) und Shichman-Hodges (MOSFET)
 │   ├── src/waveform.rs   DC, Sinus, Puls/Rechteck, stückweise linear
 │   └── tests/            Referenztests gegen analytische Lösungen
@@ -104,6 +127,7 @@ elab/
     ├── src/examples.rs   Beispielschaltungen
     ├── src/editor.rs     Zeichenfläche, Werkzeuge, Live-Darstellung
     ├── src/panels.rs     Logikanalysator, Wahrheitstabelle, Echtzeit-Digitalbetrieb
+    ├── src/mixed.rs      Echtzeitbetrieb gemischter Schaltungen
     ├── src/symbols.rs    Schaltzeichen
     ├── src/tutorial.rs   Erklärtexte
     ├── src/script.rs     Testskripte für automatisierte Oberflächentests
@@ -120,12 +144,16 @@ cargo run --release -- --script crates/elab-app/ui-tests/schaltung_bauen.txt
 cargo run --release -- --script crates/elab-app/ui-tests/einfuegen.txt
 cargo run --release -- --script crates/elab-app/ui-tests/digital_bauen.txt
 cargo run --release -- --script crates/elab-app/ui-tests/transistor_bauen.txt
+cargo run --release -- --script crates/elab-app/ui-tests/ic_bauen.txt
+cargo run --release -- --script crates/elab-app/ui-tests/eigenes_ic.txt
 ```
 
 - `schaltung_bauen`: LED-Schaltung von Grund auf, Verdrahten, Verschieben, Drehen, Undo
 - `einfuegen`: Bauteile per Klick und Drag & Drop in Leitungen einfügen, Leitung verlängern
-- `digital_bauen`: Gatterschaltung bauen, schalten, Buskonflikt, Analog/Digital-Mischung
+- `digital_bauen`: Gatterschaltung bauen, schalten, Buskonflikt, Analog/Digital-Kopplung
 - `transistor_bauen`: Transistorschalter per Drag & Drop, Taster gedrückt halten
+- `ic_bauen`: NAND-Baustein mit Versorgung, Pull-down und LED; Taster; offener Eingang (X)
+- `eigenes_ic`: Inverter aus IC-Anschlüssen bauen, als IC speichern, einsetzen und prüfen
 - `zufallstest.py`: erzeugt Skripte mit vielen zufälligen schnellen Aktionen über alle Bauteile
   (`python3 crates/elab-app/ui-tests/zufallstest.py 1 150 > /tmp/z.txt`)
 
@@ -139,6 +167,6 @@ Befehle: siehe `src/script.rs`.
 | **1** ✅ | Schaltplan-Editor, Live-Arbeitspunkt, Tutorial, Oszilloskop, Speichern/Laden |
 | **2** ✅ | Digital-Engine (0/1/X/Z, ereignisgesteuert), Gatter, Flipflops, Zähler, Logikanalysator, Wahrheitstabelle |
 | **3** ✅ | Transistoren (BJT, MOSFET), Volt- und Amperemeter, Poti, Taster, Gatter aus Transistoren |
-| 4 | Mixed-Signal: Logik-ICs mit Versorgungsanschlüssen und echten Schaltschwellen (74HC/74HCT), OpAmp, 555, ADC/DAC, eigene ICs |
-| 5 | Stromfluss-Animation, Echtzeit-Simulation, Kennlinien, Lektionen mit Aufgabenprüfung |
+| **4** ✅ | Mixed-Signal in Echtzeit: Logik-ICs mit Versorgung und Schaltschwellen (74HC/74HCT), Schmitt-Trigger, NE555, OpAmp, ADC/DAC, eigene ICs |
+| 5 | Stromfluss-Animation, Echtzeit auch für rein analoge Schaltungen, Kennlinien, Lektionen mit Aufgabenprüfung |
 | 6 | Politur, macOS-Bundle |

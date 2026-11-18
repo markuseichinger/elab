@@ -57,6 +57,7 @@ pub enum Topic {
     OpAmp,
     AdcDac,
     RealTime,
+    CustomIc,
 }
 
 pub struct Doc {
@@ -105,6 +106,7 @@ impl Topic {
             PartKind::Timer555 => Topic::Timer555,
             PartKind::OpAmp { .. } => Topic::OpAmp,
             PartKind::Adc4 | PartKind::Dac4 => Topic::AdcDac,
+            PartKind::Port | PartKind::Custom { .. } => Topic::CustomIc,
         }
     }
 
@@ -117,7 +119,8 @@ impl Topic {
         [Topic::Bjt, Topic::Mosfet, Topic::TransistorSwitch, Topic::RealLogic, Topic::Potentiometer, Topic::Voltmeter, Topic::Ammeter];
 
     /// Themen zu echten Bausteinen (Mixed-Signal).
-    pub const MIXED: [Topic; 7] = [Topic::RealIc, Topic::Families, Topic::Schmitt, Topic::Timer555, Topic::OpAmp, Topic::AdcDac, Topic::RealTime];
+    pub const MIXED: [Topic; 8] =
+        [Topic::RealIc, Topic::Families, Topic::Schmitt, Topic::Timer555, Topic::OpAmp, Topic::AdcDac, Topic::RealTime, Topic::CustomIc];
 
     /// Themen der Digitaltechnik für das Inhaltsverzeichnis.
     pub const DIGITAL: [Topic; 10] = [
@@ -521,6 +524,22 @@ pub fn doc(t: Topic) -> Doc {
             watch: "Schnelle Vorgänge (kHz) sind in Echtzeit nur ein Flimmern. Stell das Tempo auf 0,01× und schau zu, wie die Spannung am \
                     Kondensator eines Oszillators steigt und fällt.",
             related: &[RealIc, Timer555, Scope],
+        },
+        CustomIc => Doc {
+            title: "Eigene ICs",
+            what: "Jede Schaltung lässt sich als eigener Baustein speichern und dann beliebig oft einsetzen, wie ein IC aus dem Katalog. \
+                   So baut man Großes aus Kleinem: aus Gattern einen Halbaddierer, aus zwei Halbaddierern einen Volladdierer, \
+                   daraus ein Rechenwerk.\n\n\
+                   Die Anschlüsse legst du mit dem Bauteil „IC-Anschluss“ fest. Sein Name wird zum Pin-Namen. Anschlüsse auf der \
+                   linken Hälfte der Schaltung landen links am IC, die anderen rechts. VCC und GND kommen nach oben und unten. \
+                   Speichern: im Reiter ICs auf „Schaltplan als IC speichern“. Das IC erscheint dann unter „Eigene ICs“.",
+            math: "Halbaddierer:  S = A ⊕ B,  C = A · B\nVolladdierer:  zwei Halbaddierer + ODER\n  S = A ⊕ B ⊕ C_ein\n  C_aus = A·B + C_ein·(A ⊕ B)",
+            typical: "Jedes eingesetzte IC trägt eine Kopie seiner Innenschaltung, eine Datei funktioniert deshalb auch ohne die \
+                      Bibliothek. Die Bibliothek liegt in ~/.elab/ics. Im Inspektor öffnet „Innenschaltung öffnen“ den Inhalt zum Ansehen \
+                      oder Ändern. Danach unter demselben Namen neu speichern.",
+            watch: "Beispiel „Volladdierer aus Halbaddierer-ICs“: Schalte A, B und C_ein und vergleiche mit der Wahrheitstabelle. \
+                    Fahre über ein Halbaddierer-IC: Die Anschlüsse zeigen ihre Pegel.",
+            related: &[RealIc, Logic, TruthTable],
         },
         Potentiometer => Doc {
             title: "Potentiometer",

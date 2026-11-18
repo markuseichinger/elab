@@ -46,6 +46,24 @@ impl B {
     }
 }
 
+/// Innenschaltung des eigenen ICs „Halbaddierer“: S = A ⊕ B, C = A · B.
+pub fn half_adder_ic() -> Document {
+    B::new("Halbaddierer")
+        .named(K::Port, 0, -4, 2, "A")
+        .named(K::Port, 0, 4, 2, "B")
+        .part(K::Gate { gate: G::Xor }, 8, -3, 0)
+        .part(K::Gate { gate: G::And }, 8, 3, 0)
+        .named(K::Port, 14, -3, 0, "S")
+        .named(K::Port, 14, 3, 0, "C")
+        .wire(&[(0, -4), (5, -4)])
+        .wire(&[(2, -4), (2, 2), (5, 2)])
+        .wire(&[(0, 4), (5, 4)])
+        .wire(&[(3, 4), (3, -2), (5, -2)])
+        .wire(&[(11, -3), (14, -3)])
+        .wire(&[(11, 3), (14, 3)])
+        .done()
+}
+
 pub fn all() -> Vec<Example> {
     vec![
         Example {
@@ -404,6 +422,35 @@ pub fn all() -> Vec<Example> {
                 .wire(&[(18, -5), (18, 1)])
                 .wire(&[(21, -5), (21, 3)])
                 .done(),
+        },
+        Example {
+            title: "Volladdierer aus Halbaddierer-ICs",
+            summary: "Ein eigenes IC „Halbaddierer“ (XOR und UND) wird zweimal eingesetzt, ein ODER verknüpft die Überträge. \
+                      Schalte A, B und C_ein. „Innenschaltung öffnen“ im Inspektor zeigt den Inhalt des ICs.",
+            scope_t: 10e-3,
+            digital: true,
+            doc: {
+                let ha = half_adder_ic();
+                let ic = || K::Custom { name: "Halbaddierer".into(), def: Box::new(ha.clone()) };
+                B::new("Volladdierer")
+                    .named(K::LogicInput { on: true }, 1, -5, 0, "A")
+                    .named(K::LogicInput { on: false }, 1, -1, 0, "B")
+                    .named(K::LogicInput { on: true }, 1, -9, 0, "C_ein")
+                    .named(ic(), 10, -2, 0, "HA1")
+                    .named(ic(), 20, -4, 0, "HA2")
+                    .part(K::Gate { gate: G::Or }, 28, 2, 0)
+                    .named(K::LogicLed { color: LedColor::Gruen }, 27, -5, 0, "S")
+                    .named(K::LogicLed { color: LedColor::Rot }, 35, 2, 0, "C_aus")
+                    .wire(&[(3, -5), (5, -5), (5, -3), (7, -3)])
+                    .wire(&[(3, -1), (7, -1)])
+                    .wire(&[(3, -9), (16, -9), (16, -5), (17, -5)])
+                    .wire(&[(13, -3), (17, -3)])
+                    .wire(&[(23, -5), (25, -5)])
+                    .wire(&[(23, -3), (24, -3), (24, 1), (25, 1)])
+                    .wire(&[(13, -1), (14, -1), (14, 3), (25, 3)])
+                    .wire(&[(31, 2), (33, 2)])
+                    .done()
+            },
         },
         // ---------------- Echte Bausteine (Mixed-Signal) ----------------
         Example {
@@ -837,6 +884,18 @@ mod tests {
         assert_eq!(tt.inputs, ["A", "B"]);
         let outs: Vec<Vec<_>> = tt.rows.iter().map(|r| r.1.clone()).collect();
         assert_eq!(outs, vec![vec![L0, L0], vec![L1, L0], vec![L1, L0], vec![L0, L1]]);
+        // Volladdierer aus zwei eigenen ICs
+        let ex = find("Volladdierer");
+        let nl = netlist::build(&ex.doc);
+        assert!(nl.error.is_none() && nl.mixed.is_none(), "{:?}", nl.error);
+        let tt = sim::truth_table(&ex.doc, &nl).unwrap();
+        assert_eq!(tt.inputs, ["A", "B", "C_ein"]);
+        assert_eq!(tt.outputs, ["S", "C_aus"]);
+        for (ins, outs, ok) in &tt.rows {
+            let n = ins.iter().filter(|b| **b).count();
+            assert!(ok);
+            assert_eq!(outs, &vec![if n % 2 == 1 { L1 } else { L0 }, if n >= 2 { L1 } else { L0 }], "{ins:?}");
+        }
         // Logikgatter: UND, ODER, XOR
         let ex = find("Logikgatter");
         let nl = netlist::build(&ex.doc);

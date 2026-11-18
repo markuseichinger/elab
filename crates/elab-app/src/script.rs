@@ -52,6 +52,8 @@ pub enum Cmd {
     Palette(u8),
     /// Digitalsimulation anhalten
     Pause(bool),
+    /// Aktuellen Schaltplan als eigenes IC speichern
+    SaveIc(String),
     Quit,
 }
 
@@ -109,6 +111,7 @@ pub fn parse(src: &str) -> Result<Vec<Cmd>, String> {
                 _ => 0,
             }),
             "pause" => Cmd::Pause(on(1)),
+            "saveic" => Cmd::SaveIc(t.get(1).ok_or(format!("Zeile {}: Name fehlt", ln + 1))?.to_string()),
             "quit" => Cmd::Quit,
             other => return Err(format!("Zeile {}: unbekannter Befehl {other}", ln + 1)),
         });

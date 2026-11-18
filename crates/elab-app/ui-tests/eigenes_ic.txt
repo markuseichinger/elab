@@ -1,0 +1,46 @@
+# Eigenes IC: Inverter aus IC-Anschlüssen und NICHT-Gatter bauen, als IC
+# speichern, in einen neuen Schaltplan einsetzen und mit Schalter und
+# Anzeige prüfen.
+# Aufruf: cargo run --release -- --script crates/elab-app/ui-tests/eigenes_ic.txt
+
+wait 10
+cmd N
+wait 3
+palette ic
+wait 3
+paldrag IC-Anschluss -2 0
+paldrag NICHT-Gatter 6 0
+paldrag IC-Anschluss 12 0
+tool wire
+click -2 0
+click 3 0
+tool wire
+click 9 0
+click 12 0
+tool select
+wait 3
+saveic Test-Inverter
+wait 3
+cmd N
+wait 3
+palette ic
+wait 3
+paldrag Eigenes IC 6 0
+paldrag Logikschalter -2 0
+paldrag Logik-Anzeige 13 0
+tool wire
+click 0 0
+click 3 0
+tool wire
+click 9 0
+click 11 0
+tool select
+wait 5
+dump ui-out/eic_0.json
+click -2 0
+wait 5
+dump ui-out/eic_1.json
+fit
+wait 3
+shot ui-out/eic.ppm
+quit

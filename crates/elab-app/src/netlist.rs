@@ -311,7 +311,7 @@ pub struct DigitalNetlist {
     pub has_clock: bool,
 }
 
-/// Baut den Digitalteil und prüft, dass Analog- und Digitalnetze getrennt sind.
+/// Baut den Digitalteil einer rein digitalen Schaltung.
 fn build_digital(doc: &Document, nl: &mut Netlist) {
     let digital_parts: Vec<_> = doc.parts.iter().filter(|p| p.kind.is_digital()).collect();
     if digital_parts.is_empty() {
@@ -392,8 +392,77 @@ pub fn build(doc: &Document) -> Netlist {
     build_with(doc, &HashSet::new())
 }
 
+/// Abstand, in dem die Innenschaltungen eigener ICs abseits des Schaltplans eingesetzt werden.
+const CUSTOM_OFFSET: i32 = 100_000;
+/// Größte Schachtelungstiefe eigener ICs.
+const CUSTOM_DEPTH: usize = 6;
+
+/// Setzt die Innenschaltungen eigener ICs ein: Ihre Bauteile und Drähte kommen weit
+/// abseits in den Schaltplan (Namen „U1/R1“), jeder Anschluss des ICs wird mit dem
+/// passenden Port-Bauteil innen verbunden (`joins`). Das IC-Symbol selbst bleibt als
+/// neutrales Bauteil stehen, damit seine Anschlüsse ihr Netz kennen.
+fn flatten(doc: &Document) -> (Document, Vec<(P, P)>) {
+    let mut flat = doc.clone();
+    let mut joins = Vec::new();
+    if !doc.parts.iter().any(|p| p.kind.is_custom()) {
+        return (flat, joins);
+    }
+    let mut next_id = doc.next_id.max(1_000_000);
+    let mut slot = 0;
+    let customs: Vec<Part> = doc.parts.iter().filter(|p| p.kind.is_custom()).cloned().collect();
+    for part in &customs {
+        expand(part, "", 0, &mut flat, &mut joins, &mut next_id, &mut slot);
+    }
+    (flat, joins)
+}
+
+fn expand(part: &Part, prefix: &str, depth: usize, flat: &mut Document, joins: &mut Vec<(P, P)>, next_id: &mut u32, slot: &mut i32) {
+    let PartKind::Custom { def, .. } = &part.kind else { return };
+    if depth >= CUSTOM_DEPTH {
+        return;
+    }
+    *slot += 1;
+    let off = P::new(CUSTOM_OFFSET * *slot, 0);
+    let pre = format!("{prefix}{}/", part.name);
+    let mut inner_customs = Vec::new();
+    for inner in &def.parts {
+        let mut q = inner.clone();
+        q.pos = q.pos + off;
+        q.id = *next_id;
+        *next_id += 1;
+        q.name = format!("{pre}{}", inner.name);
+        if q.kind.is_custom() {
+            inner_customs.push(q.clone());
+        }
+        flat.parts.push(q);
+    }
+    for w in &def.wires {
+        let mut w2 = *w;
+        w2.a = w.a + off;
+        w2.b = w.b + off;
+        w2.id = *next_id;
+        *next_id += 1;
+        flat.wires.push(w2);
+    }
+    let outer = part.pins();
+    for (k, (pid, _, _)) in crate::model::custom_ports(def).iter().enumerate() {
+        if let (Some(port), Some(&o)) = (def.part(*pid), outer.get(k)) {
+            joins.push((o, port.pos + off));
+        }
+    }
+    for q in inner_customs {
+        let pre_inner = format!("{prefix}{}/", part.name);
+        // Name ohne den eben vergebenen Präfix, damit er nicht doppelt erscheint
+        let mut q2 = q.clone();
+        q2.name = q.name.trim_start_matches(&pre_inner).to_string();
+        expand(&q2, &pre_inner, depth + 1, flat, joins, next_id, slot);
+    }
+}
+
 /// Wie [`build`], mit dem Zustand gedrückter Taster.
-pub fn build_with(doc: &Document, pressed: &HashSet<u32>) -> Netlist {
+pub fn build_with(doc_in: &Document, pressed: &HashSet<u32>) -> Netlist {
+    let (flat, joins) = flatten(doc_in);
+    let doc = &flat;
     // 1. Alle Anschlusspunkte einsammeln
     let mut idx: HashMap<P, usize> = HashMap::new();
     let mut pts: Vec<P> = Vec::new();
@@ -422,6 +491,11 @@ pub fn build_with(doc: &Document, pressed: &HashSet<u32>) -> Netlist {
             if w.interior(*p) {
                 dsu.union(k, idx[&w.a]);
             }
+        }
+    }
+    for (a, b) in &joins {
+        if let (Some(&ia), Some(&ib)) = (idx.get(a), idx.get(b)) {
+            dsu.union(ia, ib);
         }
     }
     let mut has_gnd = false;
@@ -473,7 +547,7 @@ pub fn build_with(doc: &Document, pressed: &HashSet<u32>) -> Netlist {
     let wire_net: HashMap<u32, usize> = doc.wires.iter().map(|w| (w.id, net_of[&w.a])).collect();
 
     // 4. Erreichbarkeit ab Masse über analoge Zweipole
-    let is_analog = |k: &PartKind| !k.is_digital() && !matches!(k, PartKind::Ground | PartKind::Probe | PartKind::Voltmeter);
+    let is_analog = |k: &PartKind| !k.is_digital() && !k.is_neutral();
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); nets.len()];
     for part in doc.parts.iter().filter(|p| is_analog(&p.kind)) {
         let pn = &pin_nets[&part.id];
@@ -482,8 +556,24 @@ pub fn build_with(doc: &Document, pressed: &HashSet<u32>) -> Netlist {
             adj[w[1]].push(w[0]);
         }
     }
-    if has_gnd {
-        let mut q = VecDeque::from([0usize]);
+    // Ideale Logikbausteine bringen ihre Versorgung (0 V / 5 V) selbst mit: In einer gemischten
+    // Schaltung legen ihre Anschlüsse den Bezug fest, auch ohne Masse-Symbol.
+    let has_digital = doc.parts.iter().any(|p| p.kind.is_digital());
+    let has_ic = doc.parts.iter().any(|p| p.kind.is_ic());
+    let has_plain_analog = doc.parts.iter().any(|p| !p.kind.is_digital() && !p.kind.is_ic() && !p.kind.is_neutral());
+    let mixed = has_ic || (has_digital && has_plain_analog);
+    let implicit_gnd = mixed && !has_gnd && has_digital;
+    let mut seeds: Vec<usize> = if has_gnd { vec![0] } else { Vec::new() };
+    if implicit_gnd {
+        for part in doc.parts.iter().filter(|p| p.kind.is_digital()) {
+            seeds.extend(pin_nets[&part.id].iter().copied());
+        }
+    }
+    for &s in &seeds {
+        nets[s].reachable = true;
+    }
+    {
+        let mut q = VecDeque::from(seeds);
         while let Some(n) = q.pop_front() {
             for &m in &adj[n] {
                 if !nets[m].reachable {
@@ -512,11 +602,7 @@ pub fn build_with(doc: &Document, pressed: &HashSet<u32>) -> Netlist {
     };
 
     // 6. Rein digital oder gemischt?
-    let neutral = |k: &PartKind| matches!(k, PartKind::Ground | PartKind::Probe | PartKind::Voltmeter);
-    let has_digital = doc.parts.iter().any(|p| p.kind.is_digital());
-    let has_ic = doc.parts.iter().any(|p| p.kind.is_ic());
-    let has_plain_analog = doc.parts.iter().any(|p| !p.kind.is_digital() && !p.kind.is_ic() && !neutral(&p.kind));
-    let mixed = has_ic || (has_digital && has_plain_analog);
+    let neutral = |k: &PartKind| k.is_neutral();
     if !mixed {
         build_digital(doc, &mut nl);
     }
@@ -555,7 +641,7 @@ pub fn build_with(doc: &Document, pressed: &HashSet<u32>) -> Netlist {
         }
     }
     let mut mix = MixBuilder::new(nl.nets.len());
-    if !has_gnd {
+    if !has_gnd && !implicit_gnd {
         if !electrical.is_empty() {
             nl.error
                 .get_or_insert("Es fehlt die Masse (⏚). Ohne Bezugspunkt gibt es keine Spannungen, setze ein Masse-Symbol an den Minuspol.".into());
@@ -843,6 +929,68 @@ mod tests {
         let nl = build(&d);
         let r2 = d.part_by_name("R2").unwrap().id;
         assert_eq!(nl.bridged, vec![r2]);
+    }
+
+    /// Eigene ICs geschachtelt: Volladdierer-IC aus zwei Halbaddierer-ICs.
+    #[test]
+    fn nested_custom_ics() {
+        use crate::model::{GateType, LedColor};
+        use elab_sim::digital::Logic::*;
+        let ha = crate::examples::half_adder_ic();
+        let ic = |name: &str, def: &Document| K::Custom { name: name.into(), def: Box::new(def.clone()) };
+        // Volladdierer als IC: Ports A, B, Ci links, S, Co rechts
+        let mut fa = Document::default();
+        for (n, y) in [("A", -5), ("B", -1), ("Ci", -9)] {
+            let id = fa.add_part(K::Port, P::new(1, y), 2);
+            fa.part_mut(id).unwrap().name = n.into();
+        }
+        fa.add_part(ic("Halbaddierer", &ha), P::new(10, -2), 0);
+        fa.add_part(ic("Halbaddierer", &ha), P::new(20, -4), 0);
+        fa.add_part(K::Gate { gate: GateType::Or }, P::new(28, 2), 0);
+        for (n, x, y) in [("S", 27, -5), ("Co", 35, 2)] {
+            let id = fa.add_part(K::Port, P::new(x - 2, y), 0);
+            fa.part_mut(id).unwrap().name = n.into();
+        }
+        for pts in [
+            vec![(1, -5), (5, -5), (5, -3), (7, -3)],
+            vec![(1, -1), (7, -1)],
+            vec![(1, -9), (16, -9), (16, -5), (17, -5)],
+            vec![(13, -3), (17, -3)],
+            vec![(23, -5), (25, -5)],
+            vec![(23, -3), (24, -3), (24, 1), (25, 1)],
+            vec![(13, -1), (14, -1), (14, 3), (25, 3)],
+            vec![(31, 2), (33, 2)],
+        ] {
+            for w in pts.windows(2) {
+                fa.add_wire(P::new(w[0].0, w[0].1), P::new(w[1].0, w[1].1));
+            }
+        }
+        let names: Vec<String> = crate::model::custom_ports(&fa).into_iter().map(|p| p.1).collect();
+        assert_eq!(names, ["Ci", "A", "B", "S", "Co"]);
+        // Außen: Schalter an den Eingängen, Anzeigen an den Ausgängen
+        let mut d = Document::default();
+        let u = d.add_part(ic("Volladdierer", &fa), P::new(0, 0), 0);
+        let pins = d.part(u).unwrap().pins();
+        for (k, n) in ["Ci", "A", "B"].iter().enumerate() {
+            let id = d.add_part(K::LogicInput { on: false }, pins[k] + P::new(-4, 0), 0);
+            d.part_mut(id).unwrap().name = n.to_string();
+            d.add_wire(pins[k] + P::new(-2, 0), pins[k]);
+        }
+        for (k, n) in ["S", "Co"].iter().enumerate() {
+            let id = d.add_part(K::LogicLed { color: LedColor::Rot }, pins[3 + k] + P::new(4, 0), 0);
+            d.part_mut(id).unwrap().name = n.to_string();
+            d.add_wire(pins[3 + k], pins[3 + k] + P::new(2, 0));
+        }
+        let nl = build(&d);
+        assert!(nl.error.is_none(), "{:?}", nl.error);
+        let tt = crate::sim::truth_table(&d, &nl).unwrap();
+        assert_eq!(tt.inputs.len(), 3);
+        for (ins, outs, _) in &tt.rows {
+            let n = ins.iter().filter(|b| **b).count();
+            assert_eq!(outs, &vec![if n % 2 == 1 { L1 } else { L0 }, if n >= 2 { L1 } else { L0 }], "{ins:?}");
+        }
+        // Namen innen sind eindeutig und tragen den Pfad
+        assert!(nl.nets.iter().all(|n| !n.name.is_empty()));
     }
 
     #[test]
