@@ -44,6 +44,17 @@ cargo test --workspace              # alle Tests (Simulator, Netzliste, Modell)
 - **Oszilloskop:** Im Echtzeitbetrieb zeigt es die laufende Simulation wie ein echtes Gerät:
   Zeitbasis 100 µs … 1 s, Trigger auf die steigende Flanke des ersten Messpunkts (periodische
   Signale stehen still), Bild anhalten.
+- **Bauteiltypen mit Datenblatt:** Dioden (1N4148, 1N4007, Schottky 1N5819, Zener 3,3 / 5,1 V),
+  Kondensatoren (Keramik, Folie, Elko 16 … 63 V, gepolt), Transistoren (BC547, BC337, 2N2222,
+  BD139, BC557, 2N7000, IRLZ44N, BS250), Logikfamilien 74HC, 74HCT, 74LS und CD4000, OpAmps
+  LM358, MCP6001, TL072, LM741. Der Inspektor zeigt die Kenndaten des gewählten Typs
+  (Versorgung, Schwellen, Grenzströme, R_DS(on), Vorwiderstände …), die Grenzwerte gelten auch
+  in der Simulation: Ein verpolter Elko oder ein 74HC an 12 V geht kaputt.
+- **Beschaltung im Inspektor:** Jeder Anschluss mit seiner Aufgabe und einer Live-Prüfung
+  (✔ / ⚠ / ✗): VCC in Ordnung oder zu niedrig, GND offen, Eingang offen oder unbestimmt,
+  Ausgang überlastet, Elko oder LED verkehrt herum.
+- **Ideale Logikbausteine** (ohne Versorgung, nur 0/1) sind als solche gekennzeichnet und lassen
+  sich per Knopf durch das echte 74HC-Gegenstück ersetzen; die Anschlüsse bleiben verbunden.
 - **Bearbeiten:** Kopieren, Ausschneiden, Einfügen (⌘/Strg + C, X, V; eingefügt wird unter
   dem Mauszeiger). Markierte Leitungen lassen sich als Ganzes verschieben, angeschlossene
   Drähte und Bauteile bleiben verbunden.
@@ -164,6 +175,7 @@ elab/
     ├── src/lessons/tasks.rs  Aufgaben: Ziele, am Verhalten geprüft
     ├── src/flow.rs       Stromfluss: Ströme auf jedem Leitungsstück
     ├── src/limits.rs     Grenzwerte und Erwärmung, Durchbrennen
+    ├── src/datasheet.rs  Datenblatt, richtige Beschaltung und ihre Prüfung
     ├── src/log.rs        Protokoll und Hänger-Wächter (~/.elab/logs)
     ├── src/editor.rs     Zeichenfläche, Werkzeuge, Live-Darstellung
     ├── src/panels.rs     Logikanalysator, Wahrheitstabelle, Echtzeit-Digitalbetrieb

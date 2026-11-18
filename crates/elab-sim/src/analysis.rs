@@ -414,7 +414,11 @@ impl<'c> Simulator<'c> {
                 ElementKind::Diode { a, k, model } => {
                     let di = self.layout.lim[ei].unwrap();
                     let vraw = volt(x, *a) - volt(x, *k);
-                    let (vd, lim) = pnjlim(vraw, dv[di], model.nvt(), model.vcrit());
+                    let (vd, lim) = if vraw < 0.0 && model.bv > 0.0 {
+                        model.limit_reverse(vraw, dv[di])
+                    } else {
+                        pnjlim(vraw, dv[di], model.nvt(), model.vcrit())
+                    };
                     limited |= lim;
                     dv[di] = vd;
                     let (id, gd) = model.eval(vd);

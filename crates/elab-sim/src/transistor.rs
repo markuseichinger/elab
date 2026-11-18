@@ -27,6 +27,10 @@ impl BjtModel {
     pub const BC557: BjtModel = BjtModel { npn: false, is: 1.0e-14, bf: 250.0, br: 5.0 };
     /// Universal-NPN ähnlich 2N2222 (bis 600 mA).
     pub const N2222: BjtModel = BjtModel { npn: true, is: 1.4e-14, bf: 200.0, br: 6.0 };
+    /// NPN für mittlere Ströme ähnlich BC337 (bis 800 mA).
+    pub const BC337: BjtModel = BjtModel { npn: true, is: 4.1e-14, bf: 250.0, br: 6.0 };
+    /// NPN-Leistungstransistor ähnlich BD139 (bis 1,5 A, β niedriger).
+    pub const BD139: BjtModel = BjtModel { npn: true, is: 1.0e-13, bf: 100.0, br: 5.0 };
 
     pub fn polarity(&self) -> f64 {
         if self.npn {
@@ -92,6 +96,9 @@ pub struct MosModel {
 impl MosModel {
     /// Kleinsignal-N-Kanal ähnlich 2N7000.
     pub const N2N7000: MosModel = MosModel { nmos: true, vth: 2.1, k: 0.06, lambda: 0.01 };
+    /// Logic-Level-Leistungs-MOSFET ähnlich IRLZ44N: schaltet schon mit 5 V am Gate voll durch
+    /// (R_DS(on) ≈ 25 mΩ bei U_GS = 5 V).
+    pub const IRLZ44N: MosModel = MosModel { nmos: true, vth: 1.5, k: 5.7, lambda: 0.005 };
     /// Kleinsignal-P-Kanal ähnlich BS250.
     pub const BS250: MosModel = MosModel { nmos: false, vth: 2.1, k: 0.06, lambda: 0.01 };
     /// Logik-N-Kanal (wie in einem CMOS-Gatter, U_th ≈ 1 V).

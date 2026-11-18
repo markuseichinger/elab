@@ -149,6 +149,15 @@ pub fn draw(pen: &Pen, kind: &PartKind, live: Live) {
             pen.line((-d, -d), (d, d));
             pen.line((-d, d), (d, -d));
         }
+        PartKind::Capacitor { kind, .. } if kind.polarized() => {
+            // Elko: Plusplatte hohl, Minusplatte gefüllt, „+“ an Anschluss 1
+            pen.line((-2.0, 0.0), (-0.35, 0.0));
+            pen.line((0.25, 0.0), (2.0, 0.0));
+            let plate = [(-0.35, -0.8), (-0.15, -0.8), (-0.15, 0.8), (-0.35, 0.8)];
+            pen.poly(&plate, true);
+            pen.fill(&[(0.15, -0.8), (0.35, -0.8), (0.35, 0.8), (0.15, 0.8)], pen.color);
+            plus(pen, (-0.9, -0.75));
+        }
         PartKind::Capacitor { .. } => {
             pen.line((-2.0, 0.0), (-0.25, 0.0));
             pen.line((0.25, 0.0), (2.0, 0.0));
@@ -168,7 +177,20 @@ pub fn draw(pen: &Pen, kind: &PartKind, live: Live) {
             }
             pen.poly(&pts, false);
         }
-        PartKind::Diode { .. } => diode(pen, Color32::from_rgb(48, 52, 62)),
+        PartKind::Diode { kind } => {
+            diode(pen, Color32::from_rgb(48, 52, 62));
+            if kind.zener().is_some() {
+                // Zener: abgeknickte Enden am Kathodenstrich
+                pen.line((0.5, -0.55), (0.25, -0.7));
+                pen.line((0.5, 0.55), (0.75, 0.7));
+            } else if *kind == elab_app::model::DiodeType::Schottky1N5819 {
+                // Schottky: S-förmige Enden
+                pen.line((0.5, -0.55), (0.3, -0.55));
+                pen.line((0.3, -0.55), (0.3, -0.38));
+                pen.line((0.5, 0.55), (0.7, 0.55));
+                pen.line((0.7, 0.55), (0.7, 0.38));
+            }
+        }
         PartKind::Led { color } => {
             let [r, g, b] = color.rgb();
             let lit = live.glow.clamp(0.0, 1.0);

@@ -77,3 +77,25 @@ fn copy_paste_duplicates_with_new_names() {
     assert_eq!(leds.len(), 2);
     assert!((leds[0] - leds[1]).abs() < 1e-9 && leds[0] > 1e-3, "{leds:?}");
 }
+
+#[test]
+fn ideal_counter_replaced_by_real_ic_keeps_its_connections() {
+    let mut d = example("Zähler mit 7");
+    let ctr = d.parts.iter().find(|p| matches!(p.kind, PartKind::Counter4)).unwrap().id;
+    let nl0 = netlist::build(&d);
+    // Netze der Ausgänge Q0..Q3 und des Takts: Wer hängt daran?
+    let peers = |d: &Document, nl: &netlist::Netlist, k: usize| -> Vec<String> {
+        let n = nl.pin_nets[&ctr][k];
+        let mut v: Vec<String> =
+            d.parts.iter().filter(|p| p.id != ctr && nl.pin_nets.get(&p.id).is_some_and(|pn| pn.contains(&n))).map(|p| p.name.clone()).collect();
+        v.sort();
+        v
+    };
+    let before: Vec<Vec<String>> = [0, 2, 3, 4, 5].iter().map(|&k| peers(&d, &nl0, k)).collect();
+    let real = elab_app::datasheet::real_counterpart(&d.part(ctr).unwrap().kind).unwrap();
+    d.replace_kind(ctr, real);
+    assert!(d.part(ctr).unwrap().name.starts_with('U'));
+    let nl = netlist::build(&d);
+    let after: Vec<Vec<String>> = [0, 2, 3, 4, 5].iter().map(|&k| peers(&d, &nl, k)).collect();
+    assert_eq!(before, after);
+}

@@ -192,7 +192,7 @@ impl MixBuilder {
                 let n_in = roles.iter().filter(|r| **r == IcPin::In).count();
                 let n_out = roles.iter().filter(|r| **r == IcPin::Out).count();
                 let (vcc, gnd) = (nodes[n_in + n_out], nodes[n_in + n_out + 1]);
-                let g = self.group(name, vcc, gnd, family.v_min(), 7.0);
+                let g = self.group(name, vcc, gnd, family.v_min(), family.v_max());
                 self.group_of.insert(part.id, g);
                 let schmitt = matches!(part.kind, PartKind::SchmittIc { .. });
                 let (il, ih) = if schmitt { family.schmitt() } else { family.thresholds() };
@@ -203,32 +203,39 @@ impl MixBuilder {
                     ins.push(nets[0]);
                 }
                 let outs: Vec<usize> = (0..n_out).map(|_| self.net()).collect();
-                let slow = if family == crate::model::LogicFamily::Hct { 2 } else { 0 };
                 match &part.kind {
                     PartKind::GateIc { gate, .. } => {
-                        self.comp(CompKind::Gate(gate.to_sim()), ins, outs.clone(), 9 + slow);
+                        self.comp(CompKind::Gate(gate.to_sim()), ins, outs.clone(), family.delay(9));
                     }
                     PartKind::SchmittIc { .. } => {
-                        self.comp(CompKind::Gate(GateKind::Not), ins, outs.clone(), 12 + slow);
+                        self.comp(CompKind::Gate(GateKind::Not), ins, outs.clone(), family.delay(12));
                     }
                     PartKind::DffIc { .. } => {
-                        self.comp(CompKind::DFlipFlop, ins, outs.clone(), 15 + slow);
+                        self.comp(CompKind::DFlipFlop, ins, outs.clone(), family.delay(15));
                     }
                     _ => {
                         // /MR ist low-aktiv: intern invertiert auf den Reset des Zählers
                         let r = self.net();
                         self.comp(CompKind::Gate(GateKind::Not), vec![ins[1]], vec![r], 0);
-                        self.comp(CompKind::Counter4, vec![ins[0], r], outs.clone(), 18 + slow);
+                        self.comp(CompKind::Counter4, vec![ins[0], r], outs.clone(), family.delay(18));
                     }
                 }
                 let pin_names = part.kind.pin_names();
+                // TTL-Ausgangsstufe (74LS): High bleibt gut 1,5 V unter VCC
+                let hi = if family.high_drop() > 0.0 {
+                    let oh = c.node(&format!("{name}:oh"));
+                    c.add(&format!("{name}:VOH"), ElementKind::VSource { p: vcc, n: oh, wave: Waveform::Dc(family.high_drop()) })?;
+                    oh
+                } else {
+                    vcc
+                };
                 for (k, &o) in outs.iter().enumerate() {
                     let pin = n_in + k;
-                    self.drive(c, &format!("{name}:{}", pin_names[pin]), nodes[pin], vcc, gnd, R_OUT_HC, DriveSrc::Net(o), Some(g), false)?;
+                    self.drive(c, &format!("{name}:{}", pin_names[pin]), nodes[pin], hi, gnd, family.r_out(), DriveSrc::Net(o), Some(g), false)?;
                     src.push(PinSrc::Net(o));
                 }
                 src.extend([PinSrc::None, PinSrc::None]);
-                c.add(&format!("{name}:IQ"), ElementKind::Resistor { a: vcc, b: gnd, r: 10e6 })?;
+                c.add(&format!("{name}:IQ"), ElementKind::Resistor { a: vcc, b: gnd, r: family.r_quiescent() })?;
                 Some(SimRole::Ic { vcc: n_in + n_out, gnd: n_in + n_out + 1 })
             }
             PartKind::Timer555 => {
@@ -748,7 +755,7 @@ pub fn build_with(doc_in: &Document, pressed: &HashSet<u32>) -> Netlist {
         let kind = match &part.kind {
             PartKind::Resistor { r } => ElementKind::Resistor { a, b, r: *r },
             PartKind::Lamp { v_nom, p_nom } => ElementKind::Resistor { a, b, r: v_nom * v_nom / p_nom },
-            PartKind::Capacitor { c } => ElementKind::Capacitor { a, b, c: *c, ic: None },
+            PartKind::Capacitor { c, .. } => ElementKind::Capacitor { a, b, c: *c, ic: None },
             PartKind::Inductor { l } => ElementKind::Inductor { a, b, l: *l, ic: None },
             PartKind::DcVoltage { v } => ElementKind::VSource { p: a, n: b, wave: Waveform::Dc(*v) },
             PartKind::AcVoltage { amp, freq, offset } => ElementKind::VSource {

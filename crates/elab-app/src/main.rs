@@ -1201,9 +1201,22 @@ impl App {
                     new_kind = Some(PartKind::Resistor { r: v });
                 }
             }
-            PartKind::Capacitor { c } => {
+            PartKind::Capacitor { c, kind } => {
                 if let Some(v) = self.si_field(ui, "Kapazität", "F", c, true, "c") {
-                    new_kind = Some(PartKind::Capacitor { c: v });
+                    new_kind = Some(PartKind::Capacitor { c: v, kind });
+                }
+                let mut k = kind;
+                ui.horizontal(|ui| {
+                    ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Bauart").color(muted())));
+                    egui::ComboBox::from_id_salt(("ck", id)).selected_text(k.label()).show_ui(ui, |ui| {
+                        for t in elab_app::model::CapKind::ALL {
+                            ui.selectable_value(&mut k, t, t.label()).on_hover_text(t.describe());
+                        }
+                    });
+                });
+                ui.label(RichText::new(k.describe()).small().color(muted()));
+                if k != kind {
+                    new_kind = Some(PartKind::Capacitor { c, kind: k });
                 }
             }
             PartKind::Inductor { l } => {
@@ -1259,10 +1272,11 @@ impl App {
                     ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Typ").color(muted())));
                     egui::ComboBox::from_id_salt(("dt", id)).selected_text(k.label()).show_ui(ui, |ui| {
                         for t in DiodeType::ALL {
-                            ui.selectable_value(&mut k, t, t.label());
+                            ui.selectable_value(&mut k, t, t.label()).on_hover_text(t.describe());
                         }
                     });
                 });
+                ui.label(RichText::new(k.describe()).small().color(muted()));
                 if k != kind {
                     new_kind = Some(PartKind::Diode { kind: k });
                 }
@@ -1342,10 +1356,11 @@ impl App {
                     ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Typ").color(muted())));
                     egui::ComboBox::from_id_salt(("tt", id)).selected_text(k.label()).show_ui(ui, |ui| {
                         for t in elab_app::model::TransistorType::ALL.into_iter().filter(|t| t.family() == kind.family()) {
-                            ui.selectable_value(&mut k, t, t.label());
+                            ui.selectable_value(&mut k, t, t.label()).on_hover_text(t.describe());
                         }
                     });
                 });
+                ui.label(RichText::new(k.describe()).small().color(muted()));
                 if k != kind {
                     new_kind = Some(PartKind::Transistor { kind: k });
                 }
@@ -1410,7 +1425,7 @@ impl App {
                     ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Typ").color(muted())));
                     egui::ComboBox::from_id_salt(("oa", id)).selected_text(k.label()).show_ui(ui, |ui| {
                         for t in elab_app::model::OpAmpType::ALL {
-                            ui.selectable_value(&mut k, t, t.label());
+                            ui.selectable_value(&mut k, t, t.label()).on_hover_text(t.describe());
                         }
                     });
                 });
@@ -1488,10 +1503,38 @@ impl App {
                 });
             }
         }
+        // Ideale Logikbausteine: Hinweis und echtes Gegenstück
+        if let Some(real) = elab_app::datasheet::real_counterpart(&part.kind) {
+            ui.add_space(4.0);
+            egui::Frame::group(ui.style()).inner_margin(8.0).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("Idealer Baustein").strong().color(VIOLET));
+                ui.label(
+                    RichText::new(
+                        "Rechnet nur mit 0 und 1 und braucht keine Versorgung – praktisch zum Lernen der Logik. \
+                         Ein echter Chip hat VCC und GND und liest Spannungen.",
+                    )
+                    .small()
+                    .color(muted()),
+                );
+                let name = real.ic_type().unwrap_or_default();
+                if ui
+                    .button(format!("🔁 Durch echtes IC ersetzen ({name})"))
+                    .on_hover_text(
+                        "Tauscht den Baustein gegen das 74HC-Gegenstück. Die Anschlüsse bleiben verbunden, VCC und GND musst du noch anschließen.",
+                    )
+                    .clicked()
+                {
+                    self.replace_with_real(id, real);
+                }
+            });
+        }
         // Echte Bausteine: Versorgung und Pegel, die der Baustein an seinen Anschlüssen sieht
         if part.kind.is_ic() {
             self.ic_panel(ui, &part);
         }
+        // Richtige Beschaltung, live geprüft
+        self.wiring_panel(ui, &part);
         if let Some(k) = new_kind {
             self.hist.checkpoint(&self.doc);
             self.doc.part_mut(id).unwrap().kind = k;
@@ -1509,6 +1552,20 @@ impl App {
                 self.ed.clear_selection();
             }
         });
+        // Datenblatt
+        let rows = elab_app::datasheet::datasheet(&part.kind);
+        if !rows.is_empty() {
+            ui.add_space(4.0);
+            egui::CollapsingHeader::new(RichText::new("📄 Datenblatt").strong().color(BLUE)).id_salt("datasheet").default_open(true).show(ui, |ui| {
+                egui::Grid::new(("ds", id)).num_columns(2).spacing([8.0, 3.0]).striped(true).show(ui, |ui| {
+                    for (k, v) in rows {
+                        ui.label(RichText::new(k).color(muted()));
+                        ui.add(egui::Label::new(RichText::new(v).color(text())).wrap());
+                        ui.end_row();
+                    }
+                });
+            });
+        }
         // Messwerte
         ui.add_space(6.0);
         let vals = self.op.as_ref().ok().and_then(|o| o.parts.get(&id)).copied();
@@ -1603,7 +1660,7 @@ impl App {
             ui.add_sized([96.0, 20.0], egui::Label::new(RichText::new("Familie").color(muted())));
             egui::ComboBox::from_id_salt(("fam", id)).selected_text(f.label()).show_ui(ui, |ui| {
                 for t in elab_app::model::LogicFamily::ALL {
-                    ui.selectable_value(&mut f, t, t.label());
+                    ui.selectable_value(&mut f, t, t.label()).on_hover_text(t.describe());
                 }
             });
         });
@@ -1613,6 +1670,70 @@ impl App {
             k.set_family(f);
             k
         })
+    }
+
+    /// Anschlüsse und richtige Beschaltung mit Live-Prüfung.
+    fn wiring_panel(&mut self, ui: &mut egui::Ui, part: &elab_app::model::Part) {
+        use elab_app::datasheet::{check_pins, Status};
+        let Some(nl) = &self.nl else { return };
+        let logic = self.pin_logic.get(&part.id).map(|v| v.as_slice());
+        let checks = check_pins(&self.doc, nl, self.op.as_ref().ok(), logic, part);
+        if checks.is_empty() {
+            return;
+        }
+        let bad = checks.iter().filter(|c| c.status == Status::Bad).count();
+        let warn = checks.iter().filter(|c| c.status == Status::Warn).count();
+        ui.add_space(4.0);
+        egui::Frame::group(ui.style()).inner_margin(8.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("🔌 Beschaltung").strong().color(BLUE));
+                let (txt, col) = match (bad, warn) {
+                    (0, 0) => ("✔ in Ordnung".to_string(), GREEN),
+                    (0, w) => (format!("⚠ {w} Hinweis{}", if w == 1 { "" } else { "e" }), ACCENT),
+                    (b, _) => (format!("✗ {b} Problem{}", if b == 1 { "" } else { "e" }), RED),
+                };
+                ui.label(RichText::new(txt).strong().color(col));
+            });
+            for c in checks {
+                let (icon, col) = match c.status {
+                    Status::Ok => ("✔", GREEN),
+                    Status::Info => ("•", muted()),
+                    Status::Warn => ("⚠", ACCENT),
+                    Status::Bad => ("✗", RED),
+                };
+                ui.horizontal_top(|ui| {
+                    ui.add_sized([16.0, 18.0], egui::Label::new(RichText::new(icon).strong().color(col)));
+                    let short = c.name.split(' ').next().unwrap_or(&c.name).to_string();
+                    ui.add_sized([44.0, 18.0], egui::Label::new(RichText::new(short).strong().monospace().color(text())));
+                    ui.vertical(|ui| {
+                        ui.add(egui::Label::new(RichText::new(&c.what).size(12.5).color(muted())).wrap());
+                        if !c.detail.is_empty() {
+                            let dcol = if c.status == Status::Info { muted() } else { col };
+                            ui.add(egui::Label::new(RichText::new(&c.detail).size(12.5).strong().color(dcol)).wrap());
+                        }
+                    });
+                });
+            }
+        });
+    }
+
+    /// Ersetzt einen idealen Logikbaustein durch das echte IC und verbindet die alten
+    /// Anschlüsse mit den neuen.
+    fn replace_with_real(&mut self, id: u32, real: PartKind) {
+        let Some(old) = self.doc.part(id).cloned() else { return };
+        self.hist.checkpoint(&self.doc);
+        let was_counter = matches!(old.kind, PartKind::Counter4);
+        self.doc.replace_kind(id, real);
+        let name = self.doc.part(id).unwrap().name.clone();
+        let mut msg = format!(
+            "Ersetzt durch {name} ({}). Schließe noch VCC an Plus und GND an Masse an.",
+            self.doc.part(id).unwrap().kind.ic_type().unwrap_or_default()
+        );
+        if was_counter {
+            msg.push_str(" Achtung: Der Rücksetzeingang heißt jetzt /MR und ist low-aktiv – für normales Zählen an Plus.");
+        }
+        self.flash(msg, BLUE);
     }
 
     /// Versorgungszustand und Pegel an den Anschlüssen eines ICs.
@@ -2025,7 +2146,7 @@ impl App {
                     self.hist.checkpoint(&self.doc);
                     match &mut self.doc.part_mut(id).unwrap().kind {
                         PartKind::Resistor { r } => *r = v,
-                        PartKind::Capacitor { c } => *c = v,
+                        PartKind::Capacitor { c, .. } => *c = v,
                         PartKind::Inductor { l } => *l = v,
                         PartKind::DcVoltage { v: u } => *u = v,
                         PartKind::Potentiometer { pos, .. } => *pos = v,
@@ -2151,6 +2272,8 @@ impl App {
 fn tile_key(kind: &PartKind) -> String {
     match kind {
         PartKind::DcVoltage { v } if *v == 5.0 => format!("{} 5 V", kind.label()),
+        PartKind::Capacitor { kind: k, .. } if k.polarized() => "Elektrolytkondensator".into(),
+        PartKind::Diode { kind: d } if d.zener().is_some() => "Zener-Diode".into(),
         _ => kind.label().to_string(),
     }
 }
@@ -2220,6 +2343,8 @@ fn tile_short(kind: &PartKind) -> String {
         PartKind::SquareVoltage { .. } => "Rechteck".into(),
         PartKind::CurrentSource { .. } => "Strom".into(),
         PartKind::Lamp { .. } => "Lampe".into(),
+        PartKind::Capacitor { kind: k, .. } if k.polarized() => "Elko".into(),
+        PartKind::Diode { kind: d } if d.zener().is_some() => "Zener".into(),
         PartKind::Led { .. } => "LED".into(),
         PartKind::Transistor { kind } => match kind.family() {
             elab_app::model::TransistorFamily::Npn => "NPN",
@@ -2257,7 +2382,9 @@ fn blurb(kind: &PartKind) -> &'static str {
         PartKind::Ground => "Bezugspunkt 0 V. Jede Schaltung braucht eine Masse",
         PartKind::Resistor { .. } => "Begrenzt den Strom: U = R · I",
         PartKind::Potentiometer { .. } => "Einstellbarer Spannungsteiler mit Schleifer",
+        PartKind::Capacitor { kind: k, .. } if k.polarized() => "Große Kapazität, aber gepolt: Plus an die höhere Spannung",
         PartKind::Capacitor { .. } => "Speichert Ladung, glättet und verzögert",
+        PartKind::Diode { kind: d } if d.zener().is_some() => "Hält eine feste Spannung (in Sperrrichtung, mit Vorwiderstand)",
         PartKind::Inductor { .. } => "Spule: wehrt sich gegen Stromänderungen",
         PartKind::Lamp { .. } => "Glühlampe, leuchtet mit ihrer Leistung",
         PartKind::Diode { .. } => "Lässt Strom nur in eine Richtung durch",

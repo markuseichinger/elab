@@ -342,7 +342,7 @@ fn astable(c: &Ctx) -> Option<(f64, f64, f64)> {
     let rb = c.between(c.pin(4), c.pin(1), is_resistor)?;
     let cap = c.gnd_nets().iter().find_map(|&g| c.between(c.pin(1), Some(g), is_capacitor))?;
     match (&ra.kind, &rb.kind, &cap.kind) {
-        (PartKind::Resistor { r: a }, PartKind::Resistor { r: b }, PartKind::Capacitor { c }) => Some((*a, *b, *c)),
+        (PartKind::Resistor { r: a }, PartKind::Resistor { r: b }, PartKind::Capacitor { c, .. }) => Some((*a, *b, *c)),
         _ => None,
     }
 }

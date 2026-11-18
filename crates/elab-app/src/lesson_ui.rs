@@ -25,7 +25,7 @@ pub struct LessonRun {
 pub fn topic_kind(t: Topic) -> Option<PartKind> {
     Some(match t {
         Topic::Led => PartKind::Led { color: LedColor::Rot },
-        Topic::Capacitor => PartKind::Capacitor { c: 100e-9 },
+        Topic::Capacitor => PartKind::Capacitor { c: 100e-9, kind: elab_app::model::CapKind::Keramik },
         Topic::Bjt | Topic::TransistorSwitch => PartKind::Transistor { kind: TransistorType::Bc547 },
         Topic::Mosfet => PartKind::Transistor { kind: TransistorType::N2n7000 },
         Topic::RealIc => PartKind::GateIc { gate: GateType::Nand, family: LogicFamily::Hc },

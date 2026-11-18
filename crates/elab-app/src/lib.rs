@@ -2,6 +2,7 @@
 //!
 //! Die Oberfläche (`main.rs`) baut darauf auf; alles hier ist ohne GUI testbar.
 
+pub mod datasheet;
 pub mod examples;
 pub mod flow;
 pub mod lessons;

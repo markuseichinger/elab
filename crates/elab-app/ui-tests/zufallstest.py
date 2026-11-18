@@ -11,7 +11,7 @@ Bauteile werden per Name aus der Palette gezogen (Befehl paldrag).
 import random, sys
 seed=int(sys.argv[1]); n=int(sys.argv[2]); r=random.Random(seed)
 parts=["Gleichspannung","Gleichspannung 5 V","Wechselspannung","Rechteckspannung","Stromquelle","Widerstand","Potentiometer","Kondensator",
-       "Spule","Glühlampe","Diode","Leuchtdiode","NPN-Transistor","PNP-Transistor","N-Kanal-MOSFET","P-Kanal-MOSFET",
+       "Spule","Glühlampe","Elektrolytkondensator","Diode","Zener-Diode","Leuchtdiode","NPN-Transistor","PNP-Transistor","N-Kanal-MOSFET","P-Kanal-MOSFET",
        "Schalter","Taster","Masse","Messpunkt","Voltmeter","Amperemeter",
        "UND-Gatter","ODER-Gatter","NICHT-Gatter","NAND-Gatter","NOR-Gatter","XOR-Gatter","XNOR-Gatter","Logikschalter",
        "Logiktaster","Taktgeber","Pegel 1","Logik-Anzeige","7-Segment-Anzeige","D-Flipflop","JK-Flipflop","4-Bit-Zähler",

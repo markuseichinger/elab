@@ -76,7 +76,7 @@ fn widerstand() {
 
 #[test]
 fn kondensator_sperrt_gleichstrom() {
-    let (u, i) = measure(K::Capacitor { c: 1e-6 });
+    let (u, i) = measure(K::Capacitor { c: 1e-6, kind: elab_app::model::CapKind::Keramik });
     close(i, 0.0, 1e-9, "I");
     close(u, U0, 1e-5, "U");
 }

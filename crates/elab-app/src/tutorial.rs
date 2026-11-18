@@ -277,7 +277,8 @@ pub fn doc(t: Topic) -> Doc {
                    Im eingeschwungenen Gleichstromfall wirkt er deshalb wie eine Unterbrechung.\n\n\
                    Über einen Widerstand geladen, folgt die Spannung einer e-Funktion mit der Zeitkonstante τ = R · C.",
             math: "Q = C · U          I = C · dU/dt\nLaden:  U(t) = U₀ · (1 − e^(−t/τ)),  τ = R · C\nNach 1 τ: 63 %,  nach 5 τ: > 99 %",
-            typical: "Keramik 10 pF … 1 µF (Entkopplung, Filter), Elko 1 µF … 10 mF (Glättung, Speicher).",
+            typical: "Keramik 10 pF … 1 µF (Entkopplung, Filter), Elko 1 µF … 10 mF (Glättung, Speicher). Elkos sind gepolt: \
+                      Plus an die höhere Spannung, und nie über der Nennspannung – sonst werden sie zerstört. Bauart im Inspektor.",
             watch: "Beispiel „RC-Tiefpass“: Halbiere C. Im Oszilloskop wird die Ladekurve doppelt so steil.",
             related: &[Scope, Inductor, Resistor],
         },
@@ -342,7 +343,9 @@ pub fn doc(t: Topic) -> Doc {
                    In Durchlassrichtung beginnt sie bei Silizium ab etwa 0,6 V zu leiten, der Strom steigt danach exponentiell. \
                    In Sperrrichtung fließt nur ein winziger Sperrstrom.",
             math: "Shockley:  I = I_S · (e^(U / (n · U_T)) − 1)\nU_T = k·T/q ≈ 25,9 mV bei 27 °C\n+60 mV · n  →  zehnfacher Strom",
-            typical: "1N4148: Kleinsignal, schnell, bis 300 mA.  1N4007: Gleichrichter, bis 1 A / 1000 V.",
+            typical: "1N4148: Kleinsignal, schnell, bis 300 mA.  1N4007: Gleichrichter, bis 1 A / 1000 V.  1N5819 (Schottky): \
+                      nur ≈ 0,3 V Flussspannung, für Verpolschutz.  ZPD 3,3 / 5,1 (Zener): leiten in Sperrrichtung ab der \
+                      Zenerspannung und halten sie fest – mit Vorwiderstand ein einfacher Spannungsstabilisator.",
             watch: "Beispiel „Einweggleichrichter“: Am Ausgang liegt die Spitzenspannung minus etwa 0,8 V. Die Lücke zeigt die Flussspannung.",
             related: &[Led, OperatingPoint, AcVoltage],
         },
@@ -460,15 +463,18 @@ pub fn doc(t: Topic) -> Doc {
             related: &[Families, RealLogic, Schmitt, RealTime],
         },
         Families => Doc {
-            title: "Logikfamilien: HC, HCT, 3,3 V",
+            title: "Logikfamilien: HC, HCT, LS, 4000",
             what: "Logikfamilien unterscheiden sich in Versorgung und Schaltschwellen. 74HC-Bausteine schalten relativ zu ihrer \
                    Versorgung (30 % / 70 %). 74HCT-Bausteine haben feste TTL-Schwellen (0,8 V / 2,0 V) und laufen nur an 5 V.\n\n\
                    Das ist wichtig, wenn verschiedene Spannungen zusammentreffen. Ein ESP32 oder Raspberry Pi gibt als 1 nur 3,3 V aus. \
                    Ein 74HC an 5 V braucht aber mindestens 3,5 V, die 3,3 V liegen also im verbotenen Bereich. Ein 74HCT erkennt sie \
                    sicher als 1 und setzt sie auf 5 V um: ein einfacher Pegelwandler. In die andere Richtung, von 5 V nach 3,3 V, \
-                   braucht man einen Spannungsteiler oder einen Baustein, der 5 V am Eingang verträgt.",
+                   braucht man einen Spannungsteiler oder einen Baustein, der 5 V am Eingang verträgt.\n\n\
+                   74LS ist die ältere bipolare TTL-Technik: nur 5 V, braucht deutlich Strom, und ihr High-Ausgang erreicht nur \
+                   etwa 3,4 V – zu wenig für einen 74HC-Eingang, ein 74HCT kommt damit klar. Die CMOS-4000-Reihe (CD4011 …) läuft \
+                   von 3 bis 18 V, ist aber langsam und hat schwache Ausgänge: Eine LED direkt am Ausgang leuchtet kaum.",
             math: "Eingangsschwellen bei 5 V:\n  74HC:   0 < 1,5 V,  1 > 3,5 V\n  74HCT:  0 < 0,8 V,  1 > 2,0 V\n3,3-V-Ausgang: 1 ≈ 3,3 V\n  → für 74HC: undefiniert\n  → für 74HCT: sicher 1",
-            typical: "Die Familie stellst du im Inspektor eines Logik-ICs um. HCT-Bausteine sind die übliche Wahl als Pegelwandler \
+            typical: "Die Familie stellst du im Inspektor eines Logik-ICs um, dort steht auch das Datenblatt. HCT-Bausteine sind die übliche Wahl als Pegelwandler \
                       von 3,3-V-Mikrocontrollern zu 5-V-Logik, etwa für LED-Streifen (WS2812).",
             watch: "Beispiel „3,3 V trifft 5 V“: Beide ICs bekommen dasselbe 3,3-V-Signal. Der HC zeigt X und gibt eine halbe \
                     Spannung aus, der HCT schaltet sauber.",

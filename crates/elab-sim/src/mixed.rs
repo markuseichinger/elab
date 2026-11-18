@@ -146,9 +146,9 @@ fn power_state(g: &PowerGroup, x: &[f64], prev: PowerState) -> PowerState {
         PowerState::Overvoltage
     } else if u < REVERSE_LIMIT {
         PowerState::Reversed
-    } else if u < g.v_min || (prev == PowerState::Low && u < g.v_min + POWER_HYST) {
-        // Mit Hysterese: Ein Baustein, der wegen Unterspannung aus war, startet erst wieder,
-        // wenn die Versorgung deutlich über der Mindestspannung liegt.
+    } else if u < g.v_min - POWER_HYST || (prev != PowerState::Ok && u < g.v_min) {
+        // Mit Hysterese: Ein Baustein startet ab der Mindestspannung, schaltet aber erst
+        // deutlich darunter wieder ab (sonst flattert er, wenn die Versorgung unter Last einbricht).
         PowerState::Low
     } else {
         PowerState::Ok

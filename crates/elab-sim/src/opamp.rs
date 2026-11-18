@@ -36,6 +36,10 @@ impl OpAmpModel {
     pub const LM358: Self = Self { gain: 1e5, r_out: 50.0, drop_lo: 0.02, drop_hi: 1.5, tau: 2e-6 };
     /// Rail-to-Rail-OpAmp (z. B. MCP6001): Ausgang bis an beide Versorgungen.
     pub const RAIL_TO_RAIL: Self = Self { gain: 1e5, r_out: 30.0, drop_lo: 0.02, drop_hi: 0.02, tau: 1e-6 };
+    /// TL072: JFET-Eingänge, schnell, Ausgang bleibt etwa 1,5 V von beiden Versorgungen weg.
+    pub const TL072: Self = Self { gain: 2e5, r_out: 50.0, drop_lo: 1.5, drop_hi: 1.5, tau: 3e-7 };
+    /// LM741: der Klassiker, langsam, Ausgang bleibt etwa 2 V von beiden Versorgungen weg.
+    pub const LM741: Self = Self { gain: 2e5, r_out: 75.0, drop_lo: 2.0, drop_hi: 2.0, tau: 1e-5 };
 
     pub fn eval(&self, diff: f64, vcc: f64, vee: f64) -> OpAmpOp {
         let hi = vcc - self.drop_hi;

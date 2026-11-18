@@ -63,17 +63,45 @@ pub fn rot_f(x: f32, y: f32, r: u8) -> (f32, f32) {
 pub enum DiodeType {
     Si1N4148,
     Si1N4007,
+    Schottky1N5819,
+    Zener3V3,
+    Zener5V1,
     Ideal,
 }
 
 impl DiodeType {
-    pub const ALL: [DiodeType; 3] = [DiodeType::Si1N4148, DiodeType::Si1N4007, DiodeType::Ideal];
+    pub const ALL: [DiodeType; 6] =
+        [DiodeType::Si1N4148, DiodeType::Si1N4007, DiodeType::Schottky1N5819, DiodeType::Zener3V3, DiodeType::Zener5V1, DiodeType::Ideal];
 
     pub fn label(self) -> &'static str {
         match self {
             DiodeType::Si1N4148 => "1N4148",
             DiodeType::Si1N4007 => "1N4007",
+            DiodeType::Schottky1N5819 => "1N5819 (Schottky)",
+            DiodeType::Zener3V3 => "ZPD 3,3 (Zener)",
+            DiodeType::Zener5V1 => "ZPD 5,1 (Zener)",
             DiodeType::Ideal => "Lehrbuch",
+        }
+    }
+
+    /// Zenerspannung, falls eine Zener-Diode
+    pub fn zener(self) -> Option<f64> {
+        match self {
+            DiodeType::Zener3V3 => Some(3.3),
+            DiodeType::Zener5V1 => Some(5.1),
+            _ => None,
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            DiodeType::Si1N4148 => "Kleinsignal-Diode, schnell. Für Signale und kleine Ströme bis 300 mA.",
+            DiodeType::Si1N4007 => "Gleichrichterdiode bis 1 A und 1000 V. Langsam, für Netzteile.",
+            DiodeType::Schottky1N5819 => "Schottky-Diode: nur etwa 0,3 V Flussspannung, sehr schnell. Für Verpolschutz und Schaltnetzteile.",
+            DiodeType::Zener3V3 | DiodeType::Zener5V1 => {
+                "Zener-Diode: leitet in Sperrrichtung ab der Zenerspannung und hält sie fest. Immer mit Vorwiderstand, Kathode zum Plus."
+            }
+            DiodeType::Ideal => "Shockley-Diode aus dem Lehrbuch (I_S = 10 fA, n = 1).",
         }
     }
 
@@ -81,7 +109,66 @@ impl DiodeType {
         match self {
             DiodeType::Si1N4148 => DiodeModel::SI_1N4148,
             DiodeType::Si1N4007 => DiodeModel::SI_1N4007,
+            DiodeType::Schottky1N5819 => DiodeModel { is: 4.5e-7, n: 1.1, bv: 0.0 },
+            DiodeType::Zener3V3 => DiodeModel::zener(3.3),
+            DiodeType::Zener5V1 => DiodeModel::zener(5.1),
             DiodeType::Ideal => DiodeModel::IDEAL,
+        }
+    }
+}
+
+/// Bauart eines Kondensators: bestimmt Spannungsfestigkeit und Polung.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CapKind {
+    /// Keramikkondensator, ungepolt, 50 V
+    #[default]
+    Keramik,
+    /// Folienkondensator, ungepolt, 63 V
+    Folie,
+    /// Elektrolytkondensator, gepolt (Anschluss 1 = Plus)
+    Elko16,
+    Elko25,
+    Elko35,
+    Elko63,
+}
+
+impl CapKind {
+    pub const ALL: [CapKind; 6] = [CapKind::Keramik, CapKind::Folie, CapKind::Elko16, CapKind::Elko25, CapKind::Elko35, CapKind::Elko63];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CapKind::Keramik => "Keramik 50 V",
+            CapKind::Folie => "Folie 63 V",
+            CapKind::Elko16 => "Elko 16 V",
+            CapKind::Elko25 => "Elko 25 V",
+            CapKind::Elko35 => "Elko 35 V",
+            CapKind::Elko63 => "Elko 63 V",
+        }
+    }
+
+    /// Spannungsfestigkeit in V
+    pub fn v_max(self) -> f64 {
+        match self {
+            CapKind::Keramik => 50.0,
+            CapKind::Folie | CapKind::Elko63 => 63.0,
+            CapKind::Elko16 => 16.0,
+            CapKind::Elko25 => 25.0,
+            CapKind::Elko35 => 35.0,
+        }
+    }
+
+    pub fn polarized(self) -> bool {
+        !matches!(self, CapKind::Keramik | CapKind::Folie)
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            CapKind::Keramik => "Klein und billig, ungepolt. Üblich bis etwa 1 µF, z. B. 100 nF zum Abblocken an jedem IC.",
+            CapKind::Folie => "Ungepolt, genau und verlustarm. Für Filter und Zeitglieder, etwa 1 nF … 10 µF.",
+            _ => {
+                "Elektrolytkondensator: große Kapazität (1 µF … 10 mF) auf kleinem Raum, aber gepolt. Plus an die höhere Spannung, \
+                 sonst wird er zerstört. Nie über der Nennspannung betreiben."
+            }
         }
     }
 }
@@ -134,7 +221,7 @@ impl LedColor {
     /// Der Emissionskoeffizient wird so gewählt, dass der Exponent bei 20 mA bei 30 liegt.
     pub fn model(self) -> DiodeModel {
         let n = self.vf() / (30.0 * elab_sim::diode::VT_300K);
-        DiodeModel { is: 0.02 / (30.0f64.exp() - 1.0), n }
+        DiodeModel { is: 0.02 / (30.0f64.exp() - 1.0), n, bv: 0.0 }
     }
 }
 
@@ -209,22 +296,32 @@ pub enum LogicFamily {
     Hc,
     /// CMOS mit TTL-Schwellen 0,8 V / 2,0 V, nur 5 V
     Hct,
+    /// Bipolar (TTL, Low-Power-Schottky): nur 5 V, braucht deutlich Strom, High nur etwa 3,4 V
+    Ls,
+    /// CMOS-4000-Reihe: 3 … 18 V, langsam, schwache Ausgänge
+    Cd4000,
 }
 
 impl LogicFamily {
-    pub const ALL: [LogicFamily; 2] = [LogicFamily::Hc, LogicFamily::Hct];
+    pub const ALL: [LogicFamily; 4] = [LogicFamily::Hc, LogicFamily::Hct, LogicFamily::Ls, LogicFamily::Cd4000];
 
     pub fn label(self) -> &'static str {
         match self {
             LogicFamily::Hc => "74HC",
             LogicFamily::Hct => "74HCT",
+            LogicFamily::Ls => "74LS",
+            LogicFamily::Cd4000 => "CD4000",
         }
     }
 
     pub fn describe(self) -> &'static str {
         match self {
-            LogicFamily::Hc => "CMOS, 2 … 6 V. Eingang: 0 unter 30 %, 1 über 70 % der Versorgung.",
-            LogicFamily::Hct => "CMOS mit TTL-Pegeln, 4,5 … 5,5 V. Eingang: 0 unter 0,8 V, 1 über 2,0 V.",
+            LogicFamily::Hc => "CMOS, 2 … 6 V. Eingang: 0 unter 30 %, 1 über 70 % der Versorgung. Braucht fast keinen Strom.",
+            LogicFamily::Hct => "CMOS mit TTL-Pegeln, 4,5 … 5,5 V. Eingang: 0 unter 0,8 V, 1 über 2,0 V. Passt an alte TTL-Ausgänge.",
+            LogicFamily::Ls => {
+                "TTL (bipolar), nur 4,75 … 5,25 V. Eingang: 0 unter 0,8 V, 1 über 2,0 V. Ausgang High nur etwa 3,4 V. Braucht rund 2 mA je Baustein."
+            }
+            LogicFamily::Cd4000 => "CMOS 4000, 3 … 18 V. Schwellen 30 % / 70 %. Langsam (≈ 100 ns) und schwache Ausgänge (≈ 1 mA).",
         }
     }
 
@@ -232,8 +329,8 @@ impl LogicFamily {
     pub fn thresholds(self) -> (elab_sim::Level, elab_sim::Level) {
         use elab_sim::Level;
         match self {
-            LogicFamily::Hc => (Level::frac(0.3), Level::frac(0.7)),
-            LogicFamily::Hct => (Level::abs(0.8), Level::abs(2.0)),
+            LogicFamily::Hc | LogicFamily::Cd4000 => (Level::frac(0.3), Level::frac(0.7)),
+            LogicFamily::Hct | LogicFamily::Ls => (Level::abs(0.8), Level::abs(2.0)),
         }
     }
 
@@ -242,7 +339,8 @@ impl LogicFamily {
         use elab_sim::Level;
         match self {
             LogicFamily::Hc => (Level::frac(0.36), Level::frac(0.56)),
-            LogicFamily::Hct => (Level::abs(0.9), Level::abs(1.6)),
+            LogicFamily::Hct | LogicFamily::Ls => (Level::abs(0.9), Level::abs(1.6)),
+            LogicFamily::Cd4000 => (Level::frac(0.4), Level::frac(0.6)),
         }
     }
 
@@ -251,6 +349,71 @@ impl LogicFamily {
         match self {
             LogicFamily::Hc => 2.0,
             LogicFamily::Hct => 4.5,
+            LogicFamily::Ls => 4.75,
+            LogicFamily::Cd4000 => 3.0,
+        }
+    }
+
+    /// Empfohlene größte Versorgung (Datenblatt)
+    pub fn v_rec_max(self) -> f64 {
+        match self {
+            LogicFamily::Hc => 6.0,
+            LogicFamily::Hct => 5.5,
+            LogicFamily::Ls => 5.25,
+            LogicFamily::Cd4000 => 18.0,
+        }
+    }
+
+    /// Ab dieser Versorgung wird der Baustein zerstört.
+    pub fn v_max(self) -> f64 {
+        match self {
+            LogicFamily::Hc | LogicFamily::Hct | LogicFamily::Ls => 7.0,
+            LogicFamily::Cd4000 => 20.0,
+        }
+    }
+
+    /// Innenwiderstand eines Ausgangs in Ω
+    pub fn r_out(self) -> f64 {
+        match self {
+            LogicFamily::Hc | LogicFamily::Hct => 50.0,
+            LogicFamily::Ls => 40.0,
+            LogicFamily::Cd4000 => 800.0,
+        }
+    }
+
+    /// Wie weit der High-Pegel unter VCC bleibt (TTL-Ausgangsstufe) in V
+    pub fn high_drop(self) -> f64 {
+        if self == LogicFamily::Ls {
+            1.6
+        } else {
+            0.0
+        }
+    }
+
+    /// Ruhestrom-Ersatzwiderstand zwischen VCC und GND in Ω
+    pub fn r_quiescent(self) -> f64 {
+        if self == LogicFamily::Ls {
+            2.5e3
+        } else {
+            10e6
+        }
+    }
+
+    /// Laufzeit in ns zu einer Grundlaufzeit (74HC)
+    pub fn delay(self, base: u64) -> u64 {
+        match self {
+            LogicFamily::Hc => base,
+            LogicFamily::Hct => base + 2,
+            LogicFamily::Ls => base + 1,
+            LogicFamily::Cd4000 => base * 8,
+        }
+    }
+
+    /// Typbezeichnung eines Bausteins dieser Familie („74HC00“, „CD4011“)
+    pub fn part_number(self, f74: &str, cd: &str) -> String {
+        match self {
+            LogicFamily::Cd4000 => format!("CD{cd}"),
+            _ => format!("{}{f74}", self.label()),
         }
     }
 }
@@ -260,15 +423,29 @@ impl LogicFamily {
 pub enum OpAmpType {
     Lm358,
     Mcp6001,
+    Tl072,
+    Lm741,
 }
 
 impl OpAmpType {
-    pub const ALL: [OpAmpType; 2] = [OpAmpType::Lm358, OpAmpType::Mcp6001];
+    pub const ALL: [OpAmpType; 4] = [OpAmpType::Lm358, OpAmpType::Mcp6001, OpAmpType::Tl072, OpAmpType::Lm741];
+
+    /// Versorgungsbereich (gesamt, V+ − V−) in V: (min, max)
+    pub fn supply(self) -> (f64, f64) {
+        match self {
+            OpAmpType::Lm358 => (3.0, 32.0),
+            OpAmpType::Mcp6001 => (1.8, 6.0),
+            OpAmpType::Tl072 => (10.0, 36.0),
+            OpAmpType::Lm741 => (10.0, 36.0),
+        }
+    }
 
     pub fn label(self) -> &'static str {
         match self {
             OpAmpType::Lm358 => "LM358",
             OpAmpType::Mcp6001 => "MCP6001",
+            OpAmpType::Tl072 => "TL072",
+            OpAmpType::Lm741 => "LM741",
         }
     }
 
@@ -276,6 +453,8 @@ impl OpAmpType {
         match self {
             OpAmpType::Lm358 => "Standard-OpAmp, 3 … 32 V. Ausgang kommt bis etwa 1,5 V an V+ heran.",
             OpAmpType::Mcp6001 => "Rail-to-Rail-OpAmp, 1,8 … 6 V. Ausgang reicht bis an beide Versorgungen.",
+            OpAmpType::Tl072 => "JFET-OpAmp für Audio, schnell, 10 … 36 V. Ausgang bleibt 1,5 V von beiden Versorgungen weg.",
+            OpAmpType::Lm741 => "Der Klassiker von 1968, langsam, 10 … 36 V (z. B. ±15 V). Ausgang bleibt 2 V von den Versorgungen weg.",
         }
     }
 
@@ -283,6 +462,8 @@ impl OpAmpType {
         match self {
             OpAmpType::Lm358 => elab_sim::OpAmpModel::LM358,
             OpAmpType::Mcp6001 => elab_sim::OpAmpModel::RAIL_TO_RAIL,
+            OpAmpType::Tl072 => elab_sim::OpAmpModel::TL072,
+            OpAmpType::Lm741 => elab_sim::OpAmpModel::LM741,
         }
     }
 }
@@ -341,6 +522,9 @@ pub enum TransistorType {
     CmosN,
     Bs250,
     CmosP,
+    Bc337,
+    Bd139,
+    Irlz44n,
 }
 
 /// Grundart eines Transistors.
@@ -361,14 +545,49 @@ impl TransistorType {
             TransistorType::N2n7000 => (0.2, 0.4),
             TransistorType::Bs250 => (0.18, 0.83),
             TransistorType::CmosN | TransistorType::CmosP => (0.05, 0.2),
+            TransistorType::Bc337 => (0.8, 0.625),
+            TransistorType::Bd139 => (1.5, 1.25),
+            TransistorType::Irlz44n => (20.0, 3.8),
         }
     }
 
-    pub const ALL: [TransistorType; 7] = [
+    /// Größte Spannung U_CE bzw. U_DS in V
+    pub fn v_max(self) -> f64 {
+        match self {
+            TransistorType::Bc547 | TransistorType::Bc557 | TransistorType::Bc337 | TransistorType::Bs250 => 45.0,
+            TransistorType::N2222 => 40.0,
+            TransistorType::Bd139 => 80.0,
+            TransistorType::N2n7000 => 60.0,
+            TransistorType::Irlz44n => 55.0,
+            TransistorType::CmosN | TransistorType::CmosP => 7.0,
+        }
+    }
+
+    /// Kurzbeschreibung: wofür der Typ gut ist
+    pub fn describe(self) -> &'static str {
+        match self {
+            TransistorType::Bc547 => "Der Standard-NPN für kleine Ströme (bis 100 mA): LEDs, Relais-Treiber, Verstärker.",
+            TransistorType::Bc337 => "NPN für mittlere Ströme bis 800 mA, z. B. kleine Motoren und Lampen.",
+            TransistorType::N2222 => "Universal-NPN bis 600 mA, in vielen Bastelsets.",
+            TransistorType::Bd139 => "Leistungs-NPN bis 1,5 A, β nur etwa 100. Ab 1 W Verlust braucht er einen Kühlkörper.",
+            TransistorType::Bc557 => "Gegenstück zum BC547 (PNP): schaltet zur Plusseite.",
+            TransistorType::N2n7000 => "Kleiner N-Kanal-MOSFET bis 200 mA. Gate braucht etwa 4 … 10 V.",
+            TransistorType::Irlz44n => {
+                "Logic-Level-MOSFET: schaltet mit 5 V am Gate bis 20 A (hier ohne Kühlkörper begrenzt). Für Motoren, LED-Streifen."
+            }
+            TransistorType::Bs250 => "Kleiner P-Kanal-MOSFET bis 180 mA: schaltet zur Plusseite.",
+            TransistorType::CmosN | TransistorType::CmosP => "Winziger Transistor wie im Inneren eines CMOS-Chips. Zum Nachbauen von Gattern.",
+        }
+    }
+
+    pub const ALL: [TransistorType; 10] = [
         TransistorType::Bc547,
+        TransistorType::Bc337,
         TransistorType::N2222,
+        TransistorType::Bd139,
         TransistorType::Bc557,
         TransistorType::N2n7000,
+        TransistorType::Irlz44n,
         TransistorType::CmosN,
         TransistorType::Bs250,
         TransistorType::CmosP,
@@ -377,9 +596,9 @@ impl TransistorType {
     pub fn family(self) -> TransistorFamily {
         use TransistorType::*;
         match self {
-            Bc547 | N2222 => TransistorFamily::Npn,
+            Bc547 | N2222 | Bc337 | Bd139 => TransistorFamily::Npn,
             Bc557 => TransistorFamily::Pnp,
-            N2n7000 | CmosN => TransistorFamily::Nmos,
+            N2n7000 | CmosN | Irlz44n => TransistorFamily::Nmos,
             Bs250 | CmosP => TransistorFamily::Pmos,
         }
     }
@@ -394,6 +613,9 @@ impl TransistorType {
             CmosN => "CMOS-N",
             Bs250 => "BS250",
             CmosP => "CMOS-P",
+            Bc337 => "BC337",
+            Bd139 => "BD139",
+            Irlz44n => "IRLZ44N",
         }
     }
 
@@ -407,6 +629,8 @@ impl TransistorType {
             TransistorType::Bc547 => Some(B::BC547),
             TransistorType::N2222 => Some(B::N2222),
             TransistorType::Bc557 => Some(B::BC557),
+            TransistorType::Bc337 => Some(B::BC337),
+            TransistorType::Bd139 => Some(B::BD139),
             _ => None,
         }
     }
@@ -418,6 +642,7 @@ impl TransistorType {
             TransistorType::CmosN => Some(M::CMOS_N),
             TransistorType::Bs250 => Some(M::BS250),
             TransistorType::CmosP => Some(M::CMOS_P),
+            TransistorType::Irlz44n => Some(M::IRLZ44N),
             _ => None,
         }
     }
@@ -442,6 +667,8 @@ pub enum PartKind {
     },
     Capacitor {
         c: f64,
+        #[serde(default)]
+        kind: CapKind,
     },
     Inductor {
         l: f64,
@@ -652,7 +879,8 @@ impl PartKind {
                 vec![
                     PartKind::Resistor { r: 1000.0 },
                     PartKind::Potentiometer { r: 10e3, pos: 0.5 },
-                    PartKind::Capacitor { c: 100e-9 },
+                    PartKind::Capacitor { c: 100e-9, kind: CapKind::Keramik },
+                    PartKind::Capacitor { c: 100e-6, kind: CapKind::Elko25 },
                     PartKind::Inductor { l: 1e-3 },
                     PartKind::Lamp { v_nom: 12.0, p_nom: 5.0 },
                 ],
@@ -661,6 +889,7 @@ impl PartKind {
                 "Halbleiter",
                 vec![
                     PartKind::Diode { kind: DiodeType::Si1N4148 },
+                    PartKind::Diode { kind: DiodeType::Zener5V1 },
                     PartKind::Led { color: LedColor::Rot },
                     PartKind::Transistor { kind: TransistorType::Bc547 },
                     PartKind::Transistor { kind: TransistorType::Bc557 },
@@ -670,9 +899,9 @@ impl PartKind {
             ),
             ("Schalter", vec![PartKind::Switch { closed: false }, PartKind::PushButton]),
             ("Messen", vec![PartKind::Probe, PartKind::Voltmeter, PartKind::Ammeter]),
-            ("Logikgatter (ideal)", GateType::ALL.iter().map(|&g| PartKind::Gate { gate: g }).collect()),
+            ("Logikgatter (ideal, ohne Versorgung)", GateType::ALL.iter().map(|&g| PartKind::Gate { gate: g }).collect()),
             (
-                "Logik: Ein- und Ausgänge",
+                "Logik: Ein- und Ausgänge (ideal)",
                 vec![
                     PartKind::LogicInput { on: false },
                     PartKind::Button,
@@ -682,7 +911,7 @@ impl PartKind {
                     PartKind::SevenSeg,
                 ],
             ),
-            ("Logik: Speicher & Zähler", vec![PartKind::DFlipFlop, PartKind::JkFlipFlop, PartKind::Counter4]),
+            ("Logik: Speicher & Zähler (ideal)", vec![PartKind::DFlipFlop, PartKind::JkFlipFlop, PartKind::Counter4]),
             (
                 "Logik-ICs (74HC, mit Versorgung)",
                 [GateType::Nand, GateType::Nor, GateType::And, GateType::Or, GateType::Xor, GateType::Not]
@@ -716,20 +945,20 @@ impl PartKind {
         use PartKind::*;
         Some(match self {
             GateIc { gate, family } => {
-                let n = match gate {
-                    GateType::Nand => "00",
-                    GateType::Nor => "02",
-                    GateType::Not => "04",
-                    GateType::And => "08",
-                    GateType::Or => "32",
-                    GateType::Xor => "86",
-                    GateType::Xnor => "7266",
+                let (n, cd) = match gate {
+                    GateType::Nand => ("00", "4011"),
+                    GateType::Nor => ("02", "4001"),
+                    GateType::Not => ("04", "4069"),
+                    GateType::And => ("08", "4081"),
+                    GateType::Or => ("32", "4071"),
+                    GateType::Xor => ("86", "4070"),
+                    GateType::Xnor => ("7266", "4077"),
                 };
-                format!("{}{n}", family.label())
+                family.part_number(n, cd)
             }
-            SchmittIc { family } => format!("{}14", family.label()),
-            DffIc { family } => format!("{}74", family.label()),
-            CounterIc { family } => format!("{}161", family.label()),
+            SchmittIc { family } => family.part_number("14", "40106"),
+            DffIc { family } => family.part_number("74", "4013"),
+            CounterIc { family } => family.part_number("161", "40161"),
             Timer555 => "NE555".into(),
             OpAmp { kind } => kind.label().into(),
             Adc4 => "ADC 4 Bit".into(),
@@ -1015,6 +1244,7 @@ impl PartKind {
             JkFlipFlop => &["J", "C", "K", "Q", "/Q"],
             Counter4 => &["C", "R", "Q0", "Q1", "Q2", "Q3"],
             SevenSeg => &["1", "2", "4", "8"],
+            Capacitor { kind, .. } if kind.polarized() => &["+", "−"],
             _ => &["1", "2"],
         }
     }
@@ -1025,7 +1255,8 @@ impl PartKind {
         use PartKind::*;
         match self {
             Resistor { r } => si(*r, "Ω"),
-            Capacitor { c } => si(*c, "F"),
+            Capacitor { c, kind } if kind.polarized() => format!("{} {}", si(*c, "F"), si(kind.v_max(), "V")),
+            Capacitor { c, .. } => si(*c, "F"),
             Inductor { l } => si(*l, "H"),
             Lamp { v_nom, p_nom } => format!("{} / {}", si(*v_nom, "V"), si(*p_nom, "W")),
             DcVoltage { v } => si(*v, "V"),
@@ -1152,6 +1383,10 @@ pub enum Limit {
     Current(f64),
     /// Leistung in W
     Power(f64),
+    /// Spannung (Betrag) in V
+    Voltage(f64),
+    /// Spannung in Sperrrichtung (gepolte Bauteile: Anschluss 1 negativ) in V
+    Reverse(f64),
 }
 
 impl PartKind {
@@ -1164,9 +1399,13 @@ impl PartKind {
             PartKind::Resistor { .. } => vec![Power(0.25)],
             PartKind::Diode { kind: DiodeType::Si1N4148 } => vec![Current(0.3)],
             PartKind::Diode { kind: DiodeType::Si1N4007 } => vec![Current(1.5)],
+            PartKind::Diode { kind: DiodeType::Schottky1N5819 } => vec![Current(1.5)],
+            PartKind::Diode { kind: DiodeType::Zener3V3 | DiodeType::Zener5V1 } => vec![Power(0.5)],
+            PartKind::Capacitor { kind, .. } if kind.polarized() => vec![Voltage(kind.v_max()), Reverse(1.0)],
+            PartKind::Capacitor { kind, .. } => vec![Voltage(kind.v_max())],
             PartKind::Transistor { kind } => {
                 let (i, p) = kind.ratings();
-                vec![Current(i), Power(p)]
+                vec![Current(i), Power(p), Voltage(kind.v_max())]
             }
             _ => Vec::new(),
         }
@@ -1306,6 +1545,32 @@ impl Document {
     }
 
     /// Entfernt Bauteile und Drähte.
+    /// Tauscht die Art eines Bauteils (z. B. ideales Gatter gegen echtes IC). Alte Anschlüsse,
+    /// an denen etwas hing, werden mit den neuen verbunden. Ein neuer Name passend zur Art.
+    pub fn replace_kind(&mut self, id: u32, kind: PartKind) {
+        let Some(old) = self.part(id).cloned() else { return };
+        let before = old.pins();
+        let used: Vec<bool> = before
+            .iter()
+            .map(|&q| self.wires.iter().any(|w| w.a == q || w.b == q) || self.parts.iter().any(|p| p.id != id && p.pins().contains(&q)))
+            .collect();
+        let prefix = kind.prefix();
+        let p = self.part_mut(id).unwrap();
+        p.kind = kind;
+        p.name = String::new();
+        let name = self.next_name(prefix);
+        self.part_mut(id).unwrap().name = name;
+        let after = self.part(id).unwrap().pins();
+        for ((a, b), u) in before.iter().zip(&after).zip(used) {
+            if a != b && u {
+                let c = self.best_corner(*a, *b);
+                self.add_wire(*a, c);
+                self.add_wire(c, *b);
+            }
+        }
+        self.normalize();
+    }
+
     /// Ausschnitt zum Kopieren: die gewählten Bauteile und Drähte.
     pub fn copy(&self, parts: &HashSet<u32>, wires: &HashSet<u32>) -> Clip {
         Clip {
@@ -1701,7 +1966,7 @@ mod tests {
         let mut d = Document::default();
         d.add_part(PartKind::Resistor { r: 1.0 }, P::new(0, 0), 0);
         d.add_part(PartKind::Resistor { r: 1.0 }, P::new(5, 0), 0);
-        d.add_part(PartKind::Capacitor { c: 1.0 }, P::new(9, 0), 0);
+        d.add_part(PartKind::Capacitor { c: 1.0, kind: CapKind::Keramik }, P::new(9, 0), 0);
         let names: Vec<_> = d.parts.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["R1", "R2", "C1"]);
     }

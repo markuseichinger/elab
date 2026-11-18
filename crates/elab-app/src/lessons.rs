@@ -311,7 +311,7 @@ pub fn lesson_for(kind: &PartKind) -> Option<Lesson> {
 pub fn all() -> Vec<Lesson> {
     [
         PartKind::Led { color: LedColor::Rot },
-        PartKind::Capacitor { c: 100e-9 },
+        PartKind::Capacitor { c: 100e-9, kind: crate::model::CapKind::Keramik },
         PartKind::Transistor { kind: TransistorType::Bc547 },
         PartKind::Transistor { kind: TransistorType::Bc557 },
         PartKind::Transistor { kind: TransistorType::N2n7000 },
@@ -421,7 +421,7 @@ fn led() -> Lesson {
 fn capacitor() -> Lesson {
     let tau = |c: &Ctx| -> Option<(f64, f64)> {
         let cap = match c.anchor_part()?.kind {
-            PartKind::Capacitor { c } => c,
+            PartKind::Capacitor { c, .. } => c,
             _ => return None,
         };
         let hot = if c.is_gnd(c.pin(0)) { c.pin(1) } else { c.pin(0) };
@@ -505,7 +505,7 @@ fn capacitor() -> Lesson {
         intro: "Du baust ein RC-Glied und siehst im Oszilloskop, wie der Kondensator sich mit der Zeitkonstante τ = R · C lädt und entlädt.".into(),
         outro: "Merke: τ = R · C. Nach τ 63 %, nach 5 τ voll. Die Kondensatorspannung springt nie.".into(),
         steps,
-        start_kind: PartKind::Capacitor { c: 100e-9 },
+        start_kind: PartKind::Capacitor { c: 100e-9, kind: crate::model::CapKind::Keramik },
         task: false,
     }
 }
@@ -758,7 +758,7 @@ fn timer555() -> Lesson {
         let rb = c.between(c.pin(4), c.pin(1), is_resistor)?;
         let cap = c.gnd_nets().iter().find_map(|&g| c.between(c.pin(1), Some(g), is_capacitor))?;
         match (&ra.kind, &rb.kind, &cap.kind) {
-            (PartKind::Resistor { r: a }, PartKind::Resistor { r: b }, PartKind::Capacitor { c }) => Some((*a, *b, *c)),
+            (PartKind::Resistor { r: a }, PartKind::Resistor { r: b }, PartKind::Capacitor { c, .. }) => Some((*a, *b, *c)),
             _ => None,
         }
     };
@@ -894,6 +894,7 @@ fn opamp(kind: OpAmpType) -> Lesson {
             match kind {
                 OpAmpType::Lm358 => "Der LM358 kommt nur bis etwa 1,5 V unter V+. Darüber kann er nicht mehr regeln: + und − sind nicht mehr gleich, der OpAmp ist übersteuert.",
                 OpAmpType::Mcp6001 => "Ein Rail-to-Rail-OpAmp kommt bis an die Versorgung heran. Darüber ist er übersteuert: + und − sind nicht mehr gleich.",
+                OpAmpType::Tl072 | OpAmpType::Lm741 => "Dieser OpAmp bleibt 1,5 … 2 V von beiden Versorgungen weg. Darüber kann er nicht mehr regeln: + und − sind nicht mehr gleich.",
             },
             &[0],
             |c| c.anchor_values().is_some_and(|v| v.ctrl_u.abs() > 5e-3),

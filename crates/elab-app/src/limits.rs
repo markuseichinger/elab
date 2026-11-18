@@ -16,12 +16,14 @@ pub const TAU: f64 = 0.1;
 
 /// Belastung eines Bauteils im Verhältnis zum Grenzwert (1 = genau an der Grenze) und
 /// eine Erklärung, welcher Wert zu groß ist.
-pub fn stress(kind: &PartKind, i: f64, p: f64) -> (f64, String) {
+pub fn stress(kind: &PartKind, u: f64, i: f64, p: f64) -> (f64, String) {
     let mut worst = (0.0, String::new());
     for l in kind.limits() {
         let (r, txt) = match l {
             Limit::Current(max) => (i.abs() / max, format!("{} statt höchstens {}", si(i.abs(), "A"), si(max, "A"))),
             Limit::Power(max) => (p.abs() / max, format!("{} statt höchstens {}", si(p.abs(), "W"), si(max, "W"))),
+            Limit::Voltage(max) => (u.abs() / max, format!("{} statt höchstens {}", si(u.abs(), "V"), si(max, "V"))),
+            Limit::Reverse(max) => ((-u).max(0.0) / max, format!("verpolt mit {}", si(-u, "V"))),
         };
         if r > worst.0 {
             worst = (r, txt);
@@ -70,7 +72,7 @@ impl Thermal {
                 continue;
             }
             let Some(v) = view.parts.get(&part.id) else { continue };
-            let (s, why) = stress(&part.kind, v.i, v.p);
+            let (s, why) = stress(&part.kind, v.u, v.i, v.p);
             let h = self.heat.entry(part.id).or_insert(0.0);
             *h += (s - *h) * alpha;
             if *h > 1.0 {

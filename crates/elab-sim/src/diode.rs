@@ -10,21 +10,46 @@ pub struct DiodeModel {
     pub is: f64,
     /// Emissionskoeffizient (Idealitätsfaktor), typ. 1 … 2.
     pub n: f64,
+    /// Durchbruchspannung in Sperrrichtung in V (Zener-Diode), 0 = kein Durchbruch.
+    /// Bei U = −bv fließen [`IBV`] in Sperrrichtung, darunter steigt der Strom steil an.
+    pub bv: f64,
 }
+
+/// Strom beim Einsetzen des Durchbruchs
+pub const IBV: f64 = 1e-4;
+/// Steilheit des Durchbruchs: Emissionskoeffizient der Durchbruchkennlinie
+pub const NBV: f64 = 4.0;
 
 impl DiodeModel {
     /// Lehrbuchdiode: Is = 1e-14 A, n = 1.
-    pub const IDEAL: DiodeModel = DiodeModel { is: 1e-14, n: 1.0 };
+    pub const IDEAL: DiodeModel = DiodeModel { is: 1e-14, n: 1.0, bv: 0.0 };
     /// Kleinsignal-Siliziumdiode ähnlich 1N4148.
-    pub const SI_1N4148: DiodeModel = DiodeModel { is: 2.52e-9, n: 1.752 };
+    pub const SI_1N4148: DiodeModel = DiodeModel { is: 2.52e-9, n: 1.752, bv: 0.0 };
     /// Gleichrichterdiode ähnlich 1N4007.
-    pub const SI_1N4007: DiodeModel = DiodeModel { is: 7.0e-9, n: 1.8 };
+    pub const SI_1N4007: DiodeModel = DiodeModel { is: 7.0e-9, n: 1.8, bv: 0.0 };
     /// Rote LED (Flussspannung ≈ 1,8 V bei 20 mA).
-    pub const LED_RED: DiodeModel = DiodeModel { is: 3.0e-18, n: 1.9 };
+    pub const LED_RED: DiodeModel = DiodeModel { is: 3.0e-18, n: 1.9, bv: 0.0 };
 
     #[inline]
     pub fn nvt(&self) -> f64 {
         self.n * VT_300K
+    }
+
+    /// Zener-Diode, deren Zenerspannung bei 5 mA `vz` beträgt.
+    pub fn zener(vz: f64) -> DiodeModel {
+        let nbvt = NBV * VT_300K;
+        DiodeModel { is: 2.52e-9, n: 1.752, bv: vz - nbvt * (5e-3 / IBV).ln() }
+    }
+
+    /// Spannungsbegrenzung im Durchbruchbereich: wie [`pnjlim`], gespiegelt an −bv.
+    pub fn limit_reverse(&self, vnew: f64, vold: f64) -> (f64, bool) {
+        if self.bv <= 0.0 || vnew > -self.bv * 0.5 {
+            return (vnew, false);
+        }
+        let nbvt = NBV * VT_300K;
+        let vcrit = nbvt * (nbvt / (std::f64::consts::SQRT_2 * IBV)).ln();
+        let (r, lim) = pnjlim(-vnew - self.bv, -vold - self.bv, nbvt, vcrit);
+        (-r - self.bv, lim)
     }
 
     /// Kritische Spannung, ab der das Limiting greift (wie in SPICE).
@@ -38,18 +63,31 @@ impl DiodeModel {
     /// Oberhalb von 40·n·Vt wird die Exponentialfunktion linear fortgesetzt,
     /// damit auch bei schlechten Startwerten kein Überlauf entsteht.
     pub fn eval(&self, vd: f64) -> (f64, f64) {
-        let nvt = self.nvt();
-        let x = vd / nvt;
-        const XMAX: f64 = 40.0;
-        if x > XMAX {
-            let e = XMAX.exp();
-            let i0 = self.is * (e - 1.0);
-            let g = self.is * e / nvt;
-            (i0 + g * (vd - XMAX * nvt), g)
-        } else {
-            let e = x.exp();
-            (self.is * (e - 1.0), self.is * e / nvt)
+        let (i, g) = exp_branch(self.is, self.nvt(), vd);
+        if self.bv > 0.0 {
+            // Durchbruch: Strom in Sperrrichtung, gespiegelt an −bv
+            let (ib, gb) = exp_branch(IBV, NBV * VT_300K, -vd - self.bv);
+            // ohne die −1 der Shockley-Formel: bei U = −bv fließt genau IBV
+            let ib = ib + IBV;
+            return (i - ib, g + gb);
         }
+        (i, g)
+    }
+}
+
+/// is·(e^(v/nvt) − 1) und Ableitung; oberhalb von 40·nvt linear fortgesetzt,
+/// damit auch bei schlechten Startwerten kein Überlauf entsteht.
+fn exp_branch(is: f64, nvt: f64, v: f64) -> (f64, f64) {
+    let x = v / nvt;
+    const XMAX: f64 = 40.0;
+    if x > XMAX {
+        let e = XMAX.exp();
+        let i0 = is * (e - 1.0);
+        let g = is * e / nvt;
+        (i0 + g * (v - XMAX * nvt), g)
+    } else {
+        let e = x.exp();
+        (is * (e - 1.0), is * e / nvt)
     }
 }
 
@@ -101,6 +139,19 @@ mod tests {
         let (v, lim) = pnjlim(10.0, 0.0, d.nvt(), d.vcrit());
         assert!(lim);
         assert!(v < 1.0);
+    }
+
+    #[test]
+    fn zener_breaks_down_at_its_voltage() {
+        let z = DiodeModel::zener(5.1);
+        // Bei 5 mA in Sperrrichtung liegt die Zenerspannung an
+        let i = |v: f64| -z.eval(v).0;
+        assert!((i(-5.1) - 5e-3).abs() < 1e-4, "{}", i(-5.1));
+        // darunter praktisch sperrend, darüber steiler Anstieg
+        assert!(i(-3.0) < 1e-8, "{}", i(-3.0));
+        assert!(i(-5.6) > 0.04, "{}", i(-5.6));
+        // in Flussrichtung wie eine normale Diode
+        assert!(z.eval(0.7).0 > 1e-3);
     }
 
     #[test]

@@ -556,3 +556,24 @@ fn transistorschalter_im_zeitverlauf() {
     assert!(res.voltage_at("c", 0.9e-3).unwrap() > 9.9);
     assert!(res.voltage_at("c", 2.4e-3).unwrap() < 0.2);
 }
+
+/// Zener-Stabilisierung: 9 V über 470 Ω an einer 5,1-V-Zenerdiode (Kathode an Plus).
+/// Die Ausgangsspannung bleibt fast gleich, auch wenn die Eingangsspannung schwankt.
+#[test]
+fn zener_stabilisiert() {
+    let z = DiodeModel::zener(5.1);
+    let out = |vin: f64| {
+        let mut c = Circuit::new();
+        c.vsource("V1", "in", "gnd", Waveform::Dc(vin)).unwrap();
+        c.resistor("R1", "in", "out", 470.0).unwrap();
+        c.diode("Z1", "gnd", "out", z).unwrap();
+        op(&c).voltage("out").unwrap()
+    };
+    // Referenz: Strom durch R gleich Strom durch die Zenerdiode
+    let reference = |vin: f64| bisect(0.0, vin, |v| (vin - v) / 470.0 + z.eval(-v).0);
+    for vin in [7.0, 9.0, 12.0] {
+        assert_close(out(vin), reference(vin), 1e-6, "U_out");
+    }
+    assert!((out(9.0) - 5.0).abs() < 0.2, "U_out = {}", out(9.0));
+    assert!((out(12.0) - out(7.0)).abs() < 0.5, "schlecht stabilisiert");
+}
